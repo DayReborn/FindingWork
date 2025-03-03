@@ -9,9 +9,21 @@
 #include <pthread.h>
 #include <sys/poll.h>
 #include <sys/epoll.h>
+#include <stdlib.h>  // 添加此行，声明 malloc 和 free
 
-void client_thread(void *arg){
-
+void *client_thread(void *arg){
+    int clientfd = *(int *)arg;
+    while(1){
+        char buffer[128] = {0};
+        int count = recv(clientfd, buffer, 128, 0);
+        if(count == 0){
+            break;
+        }
+        send(clientfd, buffer, count, 0);
+        printf("clientfd:%d\ncount:%d\nbuffer:%s\n", clientfd, count, buffer);
+    }
+    close(clientfd);
+    return NULL;
 }
 
 
@@ -81,12 +93,16 @@ int main()
         struct sockaddr_in clientaddr;
         socklen_t len = sizeof(clientaddr);
         int clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &len);
-        
+        int *clientfd_ptr = malloc(sizeof(int));  // 动态分配内存
+        *clientfd_ptr = clientfd;                // 复制文件描述符的值
         pthread_t thid;
-        pthread_create(&thid, NULL, client_thread, &clientfd);
-
-        printf("accept\n");
-
+        if (pthread_create(&thid, NULL, client_thread, clientfd_ptr) != 0) {
+            perror("pthread_create failed");
+            free(clientfd_ptr);
+            close(clientfd);
+        } else {
+            pthread_detach(thid);  // 分离线程
+        }
     }
 
 #endif
