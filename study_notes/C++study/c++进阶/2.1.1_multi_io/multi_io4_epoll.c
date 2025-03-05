@@ -218,10 +218,9 @@ int main()
     ev.data.fd = sockfd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
 
-    struct epoll_event events[20] = {0}; //设置为20测试水平和边沿
-    // struct epoll_event events[1024] = {0};
+    struct epoll_event events[1024] = {0}; 
     while(1){
-        int nready = epoll_wait(epfd,events, 102·4,-1);
+        int nready = epoll_wait(epfd,events, 1024,-1);
         int i = 0;
         for(i = 0;i <nready;++i){
             int connfd = events[i].data.fd;
@@ -240,20 +239,22 @@ int main()
             }
             else if(events[i].events & EPOLLIN)
             {
-                char buffer[128] = {0};
-                int count = recv(connfd, buffer, 128, 0);
+                // char buffer[128] = {0};  
+                // int count = recv(connfd, buffer, 128, 0);
+                char buffer[15] = {0};  // 设置为15测试水平和边沿
+                int count = recv(connfd, buffer, 15, 0);
                 if (count == 0)
                 {
                     printf("disconnect\n");
                     // !不关闭事件会一直循环循环
                     
                     epoll_ctl(epfd,EPOLL_CTL_DEL,connfd,NULL);
-                    close(i);
+                    close(connfd);
 
                     continue;
                 }
                 send(connfd, buffer, count, 0);
-                printf("clientfd:%d\ncount:%d\nbuffer:%s\n", i, count, buffer);
+                printf("clientfd:%d\ncount:%d\nbuffer:%s\n",connfd, count, buffer);
             }
         }
     }
