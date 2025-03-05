@@ -113,7 +113,7 @@ int main()
             pthread_detach(thid); // 分离线程
         }
     }
-#else
+#elif 0
     // @param maxfd: 设置内部循环的最大fd编号
     // @param rset: fd_set 本质是 1024 位的位图，用来标志这个io是否可读
     // @param wset: fd_set，用来标志这个io是否可写
@@ -158,13 +158,59 @@ int main()
                     FD_CLR(i, &rfds);
                     close(i);
 
-                    break;
+                    continue;
                 }
                 send(i, buffer, count, 0);
                 printf("clientfd:%d\ncount:%d\nbuffer:%s\n", i, count, buffer);
             }
         }
     }
+
+#else
+    struct pollfd fds[1024] = {0};
+
+    fds[sockfd].fd = sockfd;
+    fds[sockfd].events = POLLIN;
+    int maxfd = sockfd;
+    while (1)
+    {
+        // *其实会遍历整个数组，这里使用maxfd+1是为了简化操作
+        int nready = poll(fds, maxfd + 1, -1);
+        if (fds[sockfd].revents & POLLIN)
+        {
+            struct sockaddr_in clientaddr;
+            socklen_t len = sizeof(clientaddr);
+            int clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &len);
+
+            printf("sockfd: %d\n", clientfd);
+            fds[clientfd].fd = clientfd;
+            fds[clientfd].events = POLLIN;
+
+            maxfd = clientfd;
+        }
+        int i = 0;
+        for (i = sockfd + 1; i <= maxfd; ++i)
+        {
+            if (fds[i].revents & POLLIN)
+            {
+                char buffer[128] = {0};
+                int count = recv(i, buffer, 128, 0);
+                if (count == 0)
+                {
+                    printf("disconnect\n");
+                    // !不关闭事件会一直循环循环
+                    fds[i].fd = -1;
+                    fds[i].events = 0;
+                    close(i);
+
+                    continue;
+                }
+                send(i, buffer, count, 0);
+                printf("clientfd:%d\ncount:%d\nbuffer:%s\n", i, count, buffer);
+            }
+        }
+    }
+
 #endif
 
     // ==============================================================================
