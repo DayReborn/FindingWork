@@ -8,24 +8,32 @@
 #include <string>
 using namespace std;
 
-class Solution {
+class Solution
+{
 public:
-    bool is_huiwen(int left, int right, string &s) {
-        while (left < right) {
-            if (s[left] != s[right]) return false;
+    bool is_huiwen(int left, int right, string &s)
+    {
+        while (left < right)
+        {
+            if (s[left] != s[right])
+                return false;
             left++;
             right--;
         }
         return true;
     }
 
-    void backtrack(int left, string &s, vector<vector<string>> &res, vector<string> &path) {
-        if (left >= s.size()) {
+    void backtrack(int left, string &s, vector<vector<string>> &res, vector<string> &path)
+    {
+        if (left >= s.size())
+        {
             res.push_back(path);
             return;
         }
-        for (int right = left; right < s.size(); ++right) {
-            if (is_huiwen(left, right, s)) {
+        for (int right = left; right < s.size(); ++right)
+        {
+            if (is_huiwen(left, right, s))
+            {
                 string substr = s.substr(left, right - left + 1);
                 path.push_back(substr);
                 backtrack(right + 1, s, res, path);
@@ -34,7 +42,8 @@ public:
         }
     }
 
-    vector<vector<string>> partition(string s) {
+    vector<vector<string>> partition(string s)
+    {
         vector<vector<string>> result;
         vector<string> path;
         backtrack(0, s, result, path);

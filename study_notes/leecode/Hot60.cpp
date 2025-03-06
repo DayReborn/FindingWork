@@ -22,7 +22,7 @@ public:
                     if (board[i][j] == c)
                         break;
                 }
-                if (j <n && board[i][j] == c)
+                if (j < n && board[i][j] == c)
                     break;
             }
             if (i == m && j == n)
@@ -65,56 +65,67 @@ public:
     }
 };
 
-class Solution2 {
-    public:
-        bool exist(vector<vector<char>>& board, string word) {
-            int m = board.size();
-            if (m == 0) return false;
-            int n = board[0].size();
-            if (n == 0) return false;
-    
-            for (int i = 0; i < m; ++i) {
-                for (int j = 0; j < n; ++j) {
-                    if (board[i][j] == word[0]) {
-                        if (backtrack(i, j, 0, word, board)) {
-                            return true;
-                        }
-                    }
-                }
-            }
+class Solution2
+{
+public:
+    bool exist(vector<vector<char>> &board, string word)
+    {
+        int m = board.size();
+        if (m == 0)
             return false;
-        }
-    
-    private:
-        bool backtrack(int x, int y, int index, const string& word, vector<vector<char>>& board) {
-            if (index == word.size() - 1) {
-                return true;
-            }
-    
-            char original = board[x][y];
-            board[x][y] = ' '; // 标记为已访问
-    
-            int dx[] = {-1, 1, 0, 0};
-            int dy[] = {0, 0, -1, 1};
-            bool found = false;
-    
-            for (int i = 0; i < 4; ++i) {
-                int newx = x + dx[i];
-                int newy = y + dy[i];
-                if (newx >= 0 && newx < board.size() && newy >= 0 && newy < board[0].size() 
-                    && board[newx][newy] == word[index + 1]) {
-                    if (backtrack(newx, newy, index + 1, word, board)) {
-                        found = true;
-                        break;
+        int n = board[0].size();
+        if (n == 0)
+            return false;
+
+        for (int i = 0; i < m; ++i)
+        {
+            for (int j = 0; j < n; ++j)
+            {
+                if (board[i][j] == word[0])
+                {
+                    if (backtrack(i, j, 0, word, board))
+                    {
+                        return true;
                     }
                 }
             }
-    
-            board[x][y] = original; // 恢复
-            return found;
         }
-    };
+        return false;
+    }
 
+private:
+    bool backtrack(int x, int y, int index, const string &word, vector<vector<char>> &board)
+    {
+        if (index == word.size() - 1)
+        {
+            return true;
+        }
+
+        char original = board[x][y];
+        board[x][y] = ' '; // 标记为已访问
+
+        int dx[] = {-1, 1, 0, 0};
+        int dy[] = {0, 0, -1, 1};
+        bool found = false;
+
+        for (int i = 0; i < 4; ++i)
+        {
+            int newx = x + dx[i];
+            int newy = y + dy[i];
+            if (newx >= 0 && newx < board.size() && newy >= 0 && newy < board[0].size() && board[newx][newy] == word[index + 1])
+            {
+                if (backtrack(newx, newy, index + 1, word, board))
+                {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        board[x][y] = original; // 恢复
+        return found;
+    }
+};
 
 void test()
 {

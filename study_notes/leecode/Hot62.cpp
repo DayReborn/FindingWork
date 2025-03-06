@@ -16,28 +16,36 @@ class Solution
 public:
     vector<string> del_grid(int n, int row, int col, vector<string> grid)
     {
-        for (int j = 0; j < n; ++j) {
-            if (j != col && grid[row][j] == 'A') {
+        for (int j = 0; j < n; ++j)
+        {
+            if (j != col && grid[row][j] == 'A')
+            {
                 grid[row][j] = '.';
             }
         }
         // 标记同一列
-        for (int i = 0; i < n; ++i) {
-            if (i != row && grid[i][col] == 'A') {
+        for (int i = 0; i < n; ++i)
+        {
+            if (i != row && grid[i][col] == 'A')
+            {
                 grid[i][col] = '.';
             }
         }
         // 标记主对角线（左上到右下）
-        for (int i = 0; i < n; ++i) {
+        for (int i = 0; i < n; ++i)
+        {
             int j = col + (i - row);
-            if (i != row && j >= 0 && j < n && grid[i][j] == 'A') {
+            if (i != row && j >= 0 && j < n && grid[i][j] == 'A')
+            {
                 grid[i][j] = '.';
             }
         }
         // 标记副对角线（右上到左下）
-        for (int i = 0; i < n; ++i) {
+        for (int i = 0; i < n; ++i)
+        {
             int j = row + col - i;
-            if (i != row && j >= 0 && j < n && grid[i][j] == 'A') {
+            if (i != row && j >= 0 && j < n && grid[i][j] == 'A')
+            {
                 grid[i][j] = '.';
             }
         }
@@ -69,52 +77,58 @@ public:
     }
 };
 
-
 // 改进版本
-class Solution1 {
-    public:
-        vector<vector<string>> solveNQueens(int n) {
-            vector<vector<string>> result;
-            vector<int> queenCol(n, -1); // 每行皇后所在的列
-            vector<bool> colUsed(n, false); // 列是否被占用
-            vector<bool> mainDiag(2 * n - 1, false); // 主对角线：row - col + n - 1
-            vector<bool> antiDiag(2 * n - 1, false); // 副对角线：row + col
-            
-            backtrack(0, n, queenCol, colUsed, mainDiag, antiDiag, result);
-            return result;
-        }
-        
-    private:
-        void backtrack(int row, int n, vector<int>& queenCol, vector<bool>& colUsed, 
-                       vector<bool>& mainDiag, vector<bool>& antiDiag, vector<vector<string>>& result) {
-            if (row == n) {
-                // 生成棋盘布局
-                vector<string> board(n, string(n, '.'));
-                for (int i = 0; i < n; ++i) {
-                    board[i][queenCol[i]] = 'Q';
-                }
-                result.push_back(board);
-                return;
+class Solution1
+{
+public:
+    vector<vector<string>> solveNQueens(int n)
+    {
+        vector<vector<string>> result;
+        vector<int> queenCol(n, -1);             // 每行皇后所在的列
+        vector<bool> colUsed(n, false);          // 列是否被占用
+        vector<bool> mainDiag(2 * n - 1, false); // 主对角线：row - col + n - 1
+        vector<bool> antiDiag(2 * n - 1, false); // 副对角线：row + col
+
+        backtrack(0, n, queenCol, colUsed, mainDiag, antiDiag, result);
+        return result;
+    }
+
+private:
+    void backtrack(int row, int n, vector<int> &queenCol, vector<bool> &colUsed,
+                   vector<bool> &mainDiag, vector<bool> &antiDiag, vector<vector<string>> &result)
+    {
+        if (row == n)
+        {
+            // 生成棋盘布局
+            vector<string> board(n, string(n, '.'));
+            for (int i = 0; i < n; ++i)
+            {
+                board[i][queenCol[i]] = 'Q';
             }
-            
-            for (int col = 0; col < n; ++col) {
-                int mainIdx = row - col + n - 1;
-                int antiIdx = row + col;
-                if (!colUsed[col] && !mainDiag[mainIdx] && !antiDiag[antiIdx]) {
-                    // 放置皇后并更新标记
-                    queenCol[row] = col;
-                    colUsed[col] = true;
-                    mainDiag[mainIdx] = true;
-                    antiDiag[antiIdx] = true;
-                    
-                    backtrack(row + 1, n, queenCol, colUsed, mainDiag, antiDiag, result);
-                    
-                    // 回溯，恢复标记
-                    colUsed[col] = false;
-                    mainDiag[mainIdx] = false;
-                    antiDiag[antiIdx] = false;
-                    queenCol[row] = -1;
-                }
+            result.push_back(board);
+            return;
+        }
+
+        for (int col = 0; col < n; ++col)
+        {
+            int mainIdx = row - col + n - 1;
+            int antiIdx = row + col;
+            if (!colUsed[col] && !mainDiag[mainIdx] && !antiDiag[antiIdx])
+            {
+                // 放置皇后并更新标记
+                queenCol[row] = col;
+                colUsed[col] = true;
+                mainDiag[mainIdx] = true;
+                antiDiag[antiIdx] = true;
+
+                backtrack(row + 1, n, queenCol, colUsed, mainDiag, antiDiag, result);
+
+                // 回溯，恢复标记
+                colUsed[col] = false;
+                mainDiag[mainIdx] = false;
+                antiDiag[antiIdx] = false;
+                queenCol[row] = -1;
             }
         }
-    };
+    }
+};
