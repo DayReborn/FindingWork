@@ -14,23 +14,25 @@
 
 #define BUFFER_LENGTH 1024
 
+// TODO: 搜一下这边是什么？
+// TODO：report
+// TODO: 57:04
+// ! 通过这个方法可以慢慢与指针脱离开来
+typedef int (*RCALLBACK)(int fd);
 
-
-// * listenfd
-// * listenfd 触发 EPOLLIN(事件)， 执行accept_cb()
 int accept_cb(int fd);
-
-// * clientfd
-// * clientfd 触发 EPOLLIN(事件)， 执行recv_cb()
-// * clientfd 触发 EPOLLIN(事件)， 执行send_cb()
 int recv_cb(int fd);
 int send_cb(int fd);
 
+// conn, fd, buffer, callback
 struct conn_item
 {
     int fd;
     char buffer[BUFFER_LENGTH];
     int idx;
+    RCALLBACK accept_callback;
+    RCALLBACK recv_callback;
+    RCALLBACK send_callback;
 };
 // ! =========================================================================
 // ! libevent --> 为什么不适合多线程，本质上这也是一个事件库.
@@ -41,32 +43,30 @@ struct conn_item connlist[1024] = {0};
 
 // ! =========================================================================
 
-
-int set_event(int fd, int event, int flag){
-    if(flag){ // 0为添加，1为修改
+int set_event(int fd, int event, int flag)
+{
+    if (flag)
+    { // 0为添加，1为修改
         struct epoll_event ev;
-        ev.events = event; 
-        // ev.events = EPOLLIN | EPOLLET; 
+        ev.events = event;
+        // ev.events = EPOLLIN | EPOLLET;
         ev.data.fd = fd;
         epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
-
-    }else{
+    }
+    else
+    {
         // 设置事件
         struct epoll_event ev;
         ev.events = event;
         ev.data.fd = fd;
         epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
     }
-    
-
 }
-
 
 int accept_cb(int fd)
 {
     struct sockaddr_in clientaddr;
     socklen_t len = sizeof(clientaddr);
-    
 
     int clientfd = accept(fd, (struct sockaddr *)&clientaddr, &len);
 
@@ -79,6 +79,8 @@ int accept_cb(int fd)
     connlist[clientfd].fd = clientfd;
     memset(connlist[clientfd].buffer, 0, BUFFER_LENGTH);
     connlist[clientfd].idx = 0;
+    connlist[clientfd].recv_callback = recv_cb;
+    connlist[clientfd].send_callback = send_cb;
 
     return clientfd;
 }
@@ -92,9 +94,6 @@ int recv_cb(int fd)
     if (count == 0)
     {
         printf("disconnect\n");
-        //* 怎么解决缺少epollfd的问题
-        //* 1.定义为全局变量
-        //* 2.定义一个reactor结构体
         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
         close(fd);
     }
@@ -140,6 +139,10 @@ int main()
     // 将套接字设置为被动模式，准备接受客户端的连接请求。
     listen(sockfd, 10);
 
+    // 
+    connlist[sockfd].fd = sockfd;
+    connlist[sockfd].accept_callback = accept_cb;
+
     // create只要参数不为0和负即可
     epfd = epoll_create(1);
 
@@ -155,22 +158,30 @@ int main()
             int connfd = events[i].data.fd;
             if (sockfd == connfd)
             {
-                int clientfd = accept_cb(sockfd);
+                //int clientfd = accept_cb(sockfd);
+                
+                int clientfd = connlist[sockfd].accept_callback(sockfd);
+
                 printf("sockfd: %d\n", clientfd);
             }
             else if (events[i].events & EPOLLIN)
             {
-                int count = recv_cb(connfd);
+                // int count = recv_cb(connfd);
+
+                int count = connlist[connfd].recv_callback(connfd);
+
                 printf("recv <-- buffer:%s\n", connlist[connfd].buffer);
             }
             else if (events[i].events & EPOLLOUT)
             {
-                int count = send_cb(connfd);
+                // int count = send_cb(connfd);
+
+                int count = connlist[connfd].send_callback(connfd);
+
                 printf("send --> buffer:%s\n", connlist[connfd].buffer);
             }
         }
     }
-
 
     getchar();
     // 不要将关闭交给服务端，否则另一边端口不会释放，会一直报Timeout
