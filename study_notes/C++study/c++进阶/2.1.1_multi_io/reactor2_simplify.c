@@ -30,10 +30,14 @@ struct conn_item
     int fd;
     char buffer[BUFFER_LENGTH];
     int idx;
-    RCALLBACK accept_callback;
-    RCALLBACK recv_callback;
+    union{
+        RCALLBACK accept_callback;
+        RCALLBACK recv_callback;
+    }recv_t;
     RCALLBACK send_callback;
 };
+
+
 // ! =========================================================================
 // ! libevent --> 为什么不适合多线程，本质上这也是一个事件库.
 // ! 本质上跟我们实现的下面的这个conn_item是一样的，存放事件，下面这两个是公用的！
@@ -79,7 +83,7 @@ int accept_cb(int fd)
     connlist[clientfd].fd = clientfd;
     memset(connlist[clientfd].buffer, 0, BUFFER_LENGTH);
     connlist[clientfd].idx = 0;
-    connlist[clientfd].recv_callback = recv_cb;
+    connlist[clientfd].recv_t.recv_callback = recv_cb;
     connlist[clientfd].send_callback = send_cb;
 
     return clientfd;
@@ -139,9 +143,8 @@ int main()
     // 将套接字设置为被动模式，准备接受客户端的连接请求。
     listen(sockfd, 10);
 
-    // 
     connlist[sockfd].fd = sockfd;
-    connlist[sockfd].accept_callback = accept_cb;
+    connlist[sockfd].recv_t.accept_callback = accept_cb;
 
     // create只要参数不为0和负即可
     epfd = epoll_create(1);
@@ -156,29 +159,26 @@ int main()
         for (i = 0; i < nready; ++i)
         {
             int connfd = events[i].data.fd;
-            if (sockfd == connfd)
+
+            // if (sockfd == connfd)
+            // {
+            //     int clientfd = connlist[sockfd].accept_callback(sockfd);
+
+            //     printf("sockfd: %d\n", clientfd);
+            // }
+            // else 
+
+            if (events[i].events & EPOLLIN)
             {
-                //int clientfd = accept_cb(sockfd);
-                
-                int clientfd = connlist[sockfd].accept_callback(sockfd);
+                int count = connlist[connfd].recv_t.recv_callback(connfd);
 
-                printf("sockfd: %d\n", clientfd);
-            }
-            else if (events[i].events & EPOLLIN)
-            {
-                // int count = recv_cb(connfd);
-
-                int count = connlist[connfd].recv_callback(connfd);
-
-                printf("recv <-- buffer:%s\n", connlist[connfd].buffer);
+                printf("recv[count: %d] <-- buffer:%s\n", count, connlist[connfd].buffer);
             }
             else if (events[i].events & EPOLLOUT)
             {
-                // int count = send_cb(connfd);
-
                 int count = connlist[connfd].send_callback(connfd);
 
-                printf("send --> buffer:%s\n", connlist[connfd].buffer);
+                printf("send[count: %d] --> buffer:%s\n",count, connlist[connfd].buffer);
             }
         }
     }
