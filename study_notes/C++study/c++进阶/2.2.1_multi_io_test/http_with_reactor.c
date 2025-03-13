@@ -67,7 +67,7 @@ struct conn_item
 };
 
 int epfd = 0;                          ///< epoll实例文件描述符
-struct conn_item connlist[1024] = {0}; ///< 连接项数组，索引为文件描述符
+struct conn_item connlist[65535] = {0}; ///< 连接项数组，索引为文件描述符
 
 #if ENABLE_HTTP_RESPONSE
 typedef struct conn_item connection_t; ///< 连接项类型别名
@@ -195,7 +195,7 @@ int recv_cb(int fd)
 
     if (count == 0)
     {
-        printf("Client %d disconnected\n", fd);
+        //printf("Client %d disconnected\n", fd);
         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
         close(fd);
         return -1;
@@ -212,6 +212,7 @@ int recv_cb(int fd)
 #else
     // Echo模式：直接回显接收数据
     memcpy(conn->wbuffer, conn->rbuffer, conn->rlen);
+    conn->wbuffer[conn->rlen] = '\0';
     conn->wlen = conn->rlen;
     conn->rlen -= conn->rlen;
 #endif
@@ -252,7 +253,7 @@ int main()
         return -1;
     }
 
-    listen(sockfd, 10);
+    listen(sockfd, 4096);
 
     // 初始化监听套接字连接项
     connlist[sockfd].fd = sockfd;
@@ -262,10 +263,10 @@ int main()
     epfd = epoll_create(1);
     set_event(sockfd, EPOLLIN, 1);
 
-    struct epoll_event events[1024] = {0};
+    struct epoll_event events[65535] = {0};
     while (1)
     {
-        int nready = epoll_wait(epfd, events, 1024, -1);
+        int nready = epoll_wait(epfd, events, 65535, -1);
         for (int i = 0; i < nready; ++i)
         {
             int connfd = events[i].data.fd;
@@ -273,12 +274,12 @@ int main()
             if (events[i].events & EPOLLIN)
             {
                 int count = connlist[connfd].recv_t.recv_callback(connfd);
-                if(count == -1) printf("Recv[%d bytes] <-- Client is closed!\n");
-                else printf("Recv[%d bytes] <-- %s\n", count, connlist[connfd].rbuffer);
+                //if(count == -1) printf("Recv[%d bytes] <-- Client is closed!\n", count);
+                //else printf("Recv[%d bytes] <-- %s\n", count, connlist[connfd].rbuffer);
             }
             else if (events[i].events & EPOLLOUT)
             {
-                printf("Send --> %s\n", connlist[connfd].wbuffer);
+                //printf("Send --> %s\n", connlist[connfd].wbuffer);
                 int count = connlist[connfd].send_callback(connfd);
             }
         }
