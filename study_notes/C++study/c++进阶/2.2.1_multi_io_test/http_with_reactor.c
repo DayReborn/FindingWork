@@ -12,9 +12,10 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <fcntl.h>
 
-#define BUFFER_LENGTH 1024     ///< 读写缓冲区大小
+#define BUFFER_LENGTH 512     ///< 读写缓冲区大小
 #define ENABLE_HTTP_RESPONSE 0 ///< 启用HTTP响应功能开关
 
 /**
@@ -66,8 +67,17 @@ struct conn_item
     RCALLBACK send_callback; ///< 数据发送回调函数
 };
 
-int epfd = 0;                          ///< epoll实例文件描述符
-struct conn_item connlist[65535] = {0}; ///< 连接项数组，索引为文件描述符
+int epfd = 0;                           ///< epoll实例文件描述符
+
+// ! @bug 这边如果这个值设置的非常大会有编译错误
+// ! 例如如果设置为1048576 = 1024*1024,BUFFER_LENGTH 1024 我们缓冲区的长度再为1024的话
+// ! 最终就会申请创建一个rbuffer[BUFFER_LENGTH], wbuffer[BUFFER_LENGTH]合计2G的内存
+struct conn_item connlist[1048576] = {0}; ///< 连接项数组，索引为文件描述符
+
+struct timeval reactor_begin;
+
+#define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
+
 
 #if ENABLE_HTTP_RESPONSE
 typedef struct conn_item connection_t; ///< 连接项类型别名
@@ -174,11 +184,19 @@ int accept_cb(int fd)
     conn->rlen = 0;
     memset(conn->wbuffer, 0, BUFFER_LENGTH);
     conn->wlen = 0;
-    printf("New client: %d\n", conn->fd);
 
     // 设置回调函数
     conn->recv_t.recv_callback = recv_cb;
     conn->send_callback = send_cb;
+
+    if ((clientfd % 1000) == 999)
+    {
+        struct timeval tv_cur;
+        gettimeofday(&tv_cur,NULL);
+        int time_used  = TIME_SUB_MS(tv_cur, reactor_begin);
+        memcpy(&reactor_begin, &tv_cur, sizeof(struct timeval));
+        printf("cliendfd: %d, time_used: %d\n", conn->fd, time_used);
+    }
 
     return clientfd;
 }
@@ -195,7 +213,7 @@ int recv_cb(int fd)
 
     if (count == 0)
     {
-        //printf("Client %d disconnected\n", fd);
+        // printf("Client %d disconnected\n", fd);
         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
         close(fd);
         return -1;
@@ -234,34 +252,47 @@ int send_cb(int fd)
     return count;
 }
 
-/**
- * @brief 主函数（TCP服务器入口）
- * @return 程序退出状态码
- */
-int main()
+int Init_server(unsigned short port)
 {
     // 初始化监听套接字
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in serveraddr = {
         .sin_family = AF_INET,
         .sin_addr.s_addr = htonl(INADDR_ANY),
-        .sin_port = htons(2048)};
+        .sin_port = htons(port)};
 
     if (bind(sockfd, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1)
     {
         perror("Bind failed");
         return -1;
     }
+    listen(sockfd, 100);
+    return sockfd;
+}
 
-    listen(sockfd, 4096);
-
-    // 初始化监听套接字连接项
-    connlist[sockfd].fd = sockfd;
-    connlist[sockfd].recv_t.accept_callback = accept_cb;
+/**
+ * @brief 主函数（TCP服务器入口）
+ * @return 程序退出状态码
+ */
+int main()
+{
+    int port_count = 100;
+    unsigned short port = 2048;
+    int i = 0;
 
     // 创建epoll实例
     epfd = epoll_create(1);
-    set_event(sockfd, EPOLLIN, 1);
+
+    for (i = 0; i < port_count; ++i)
+    {
+        int sockfd = Init_server(i + port);
+        // 初始化监听套接字连接项
+        connlist[sockfd].fd = sockfd;
+        connlist[sockfd].recv_t.accept_callback = accept_cb;
+        set_event(sockfd, EPOLLIN, 1);
+    }
+
+    gettimeofday(&reactor_begin,NULL);
 
     struct epoll_event events[65535] = {0};
     while (1)
@@ -274,17 +305,15 @@ int main()
             if (events[i].events & EPOLLIN)
             {
                 int count = connlist[connfd].recv_t.recv_callback(connfd);
-                //if(count == -1) printf("Recv[%d bytes] <-- Client is closed!\n", count);
-                //else printf("Recv[%d bytes] <-- %s\n", count, connlist[connfd].rbuffer);
+                // if(count == -1) printf("Recv[%d bytes] <-- Client is closed!\n", count);
+                // else printf("Recv[%d bytes] <-- %s\n", count, connlist[connfd].rbuffer);
             }
             else if (events[i].events & EPOLLOUT)
             {
-                //printf("Send --> %s\n", connlist[connfd].wbuffer);
+                // printf("Send --> %s\n", connlist[connfd].wbuffer);
                 int count = connlist[connfd].send_callback(connfd);
             }
         }
     }
-
-    close(sockfd);
     return 0;
 }

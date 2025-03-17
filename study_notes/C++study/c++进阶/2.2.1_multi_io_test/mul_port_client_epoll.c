@@ -17,7 +17,7 @@
 
 #define MAX_BUFFER		128
 #define MAX_EPOLLSIZE	(384*1024)
-#define MAX_PORT		20
+#define MAX_PORT		100
 
 #define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
 			}
 
 			//ntySetReUseAddr(sockfd);
-			addr.sin_port = htons(port);
+			addr.sin_port = htons(port+index);
 
 			if (connect(sockfd, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
 				perror("connect");
@@ -110,34 +110,31 @@ int main(int argc, char **argv) {
 			printf("connections: %d, sockfd:%d, time_used:%d\n", connections, sockfd, time_used);
 
 			int nfds = epoll_wait(epoll_fd, events, connections, 100);
-			for (i = 0;i < nfds;i ++) {
+			for (i = 0; i < nfds; i++) {
 				int clientfd = events[i].data.fd;
 
 				if (events[i].events & EPOLLOUT) {
 					sprintf(buffer, "data from %d\n", clientfd);
-					send(sockfd, buffer, strlen(buffer), 0);
+					send(clientfd, buffer, strlen(buffer), 0); // 修正为clientfd
 				} else if (events[i].events & EPOLLIN) {
-					char rBuffer[MAX_BUFFER] = {0};				
-					ssize_t length = recv(sockfd, rBuffer, MAX_BUFFER, 0);
+					char rBuffer[MAX_BUFFER] = {0};
+					ssize_t length = recv(clientfd, rBuffer, MAX_BUFFER, 0); // 修正为clientfd
 					if (length > 0) {
 						printf(" RecvBuffer:%s\n", rBuffer);
-
 						if (!strcmp(rBuffer, "quit")) {
 							isContinue = 0;
 						}
-						
 					} else if (length == 0) {
 						printf(" Disconnect clientfd:%d\n", clientfd);
-						connections --;
+						connections--;
 						close(clientfd);
 					} else {
 						if (errno == EINTR) continue;
-
 						printf(" Error clientfd:%d, errno:%d\n", clientfd, errno);
 						close(clientfd);
 					}
 				} else {
-					printf(" clientfd:%d, errno:%d\n", clientfd, errno);
+					printf(" clientfd:%d, unknown event:%d\n", clientfd, events[i].events);
 					close(clientfd);
 				}
 			}
