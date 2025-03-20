@@ -1,3 +1,6 @@
 vidio/
 *.exe
 .vscode/
+.vscode/*
+/build/
+/build/*
