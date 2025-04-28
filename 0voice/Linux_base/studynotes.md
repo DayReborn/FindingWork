@@ -984,6 +984,1370 @@ ye-ars: 1
 
 ## 1. 通讯录实现的架构设计与需求分析
 
+> 通讯录的需求分析  -->  产品
+>
+> 1. 添加一个人员
+> 2. 打印显示所有人员
+> 3. 删除一个人员
+> 4. 查找一个人员
+> 5. 保存文件
+> 6. 加载文件
+
+
+
+---
+
+思考一些需要解决的问题：
+
+> **Q1：人员如何存储？**
+>
+> R1：使用链表的方式
+>
+> ---
+>
+> **Q2：文件存储的时候，文件用什么格式？**
+>
+> R2：人员数据的格式
+>
+> ---
+>
+> **Q3：人员信息有什么？**
+>
+> R3：姓名、电话
+
+
+
+---
+
+
+
+1. **文件数据存储如下：（key-value）**
+   **name:xxx, phone:xxx, age: xx, addr: xx**
+   **name:yyy, phone:yyy**
+
+2. 实现链表
+3. 对链表read、write
+4. 对数据进行解包和打包
+5. 设置一个接口层
+
+![image-20250427210235203](studynotes/image-20250427210235203.png)
+
+
+
+---
+
+
+
+
+
+## 2. 链表的实现与数据结构的定义
+
+整体来说是要构建一个双向链表进行存储。
+
+![image-20250427211224862](studynotes/image-20250427211224862.png)
+
+> 链表而言
+>
+> 1. Insert
+>
+> 2. Remove
+>
+> 使用**宏定义**的方式来实现
+
+
+
+---
+
+
+
+```c
+// 整体用双向链表来进行存储
+
+#define NAME_LENGTH 16
+#define PHONE_LENGTH 32
+
+#define LIST_INSERT(item, list) \
+    do                          \
+    {                           \
+        item->prev = NULL;      \
+        item->next = list;      \
+        list = item;            \
+    } while (0)
+
+
+#define LIST_REMOVE(item, list)            \
+    do                                     \
+    {                                      \
+        if (item->prev != NULL)            \
+            item->prev->next = item->next; \
+        if (item->next != NULL)            \
+            item->next->prev = item->prev; \
+        if (list == item)                  \
+            list = item->next;             \
+        item->prev = item->next = NULL;    \
+    } while (0)
+
+
+typedef struct Person
+{
+    char name[NAME_LENGTH];
+    char phone[PHONE_LENGTH];
+    person *next;
+    person *prev;
+} person;
+
+
+typedef struct Contacts
+{
+    person *people;
+    int count;
+} contacts;
+
+
+```
+
+
+
+---
+
+
+
+> 思考题：实现业务逻辑与数据结构的分离？
+
+
+
+## 3. 架构接口层的实现
+
+就是构造一些常见的接口操作了，插入删除，查询，遍历这种。
+
+```c
+// 整体用双向链表来进行存储
+#include <stdio.h>
+#include <stdlib.h>
+
+#define NAME_LENGTH 16
+#define PHONE_LENGTH 32
+
+#define INFO printf
+
+#define LIST_INSERT(item, list) \
+    do                          \
+    {                           \
+        item->prev = NULL;      \
+        item->next = list;      \
+        list = item;            \
+    } while (0)
+
+#define LIST_REMOVE(item, list)            \
+    do                                     \
+    {                                      \
+        if (item->prev != NULL)            \
+            item->prev->next = item->next; \
+        if (item->next != NULL)            \
+            item->next->prev = item->prev; \
+        if (list == item)                  \
+            list = item->next;             \
+        item->prev = item->next = NULL;    \
+    } while (0)
+
+typedef struct Person
+{
+    char name[NAME_LENGTH];
+    char phone[PHONE_LENGTH];
+    struct Person *next;
+    struct Person *prev;
+} person;
+
+typedef struct Contacts
+{
+    person *people;
+    int count;
+} contacts;
+
+int person_insert(person *people, person *ps)
+{
+    if (ps == NULL)
+        return -1;
+    LIST_INSERT(ps, people);
+    return 0;
+}
+
+int person_delete(person *people, person *ps)
+{
+    if (ps == NULL)
+        return -1;
+    LIST_REMOVE(ps, people);
+    return 0;
+}
+
+person *person_search(person *people, const char *name)
+{
+    while (people != NULL)
+    {
+        if (strcmp(people->name, name) == 0)
+            return people;
+        people = people->next;
+    }
+    return NULL;
+}
+
+int person_traversal(person *people, person *ps)
+{
+    while (people != NULL)
+    {
+        INFO(INFO("name:%s,phone:%s\n", people->name, people->phone));
+        people = people->next;
+    }
+    return 0;
+}
+
+```
+
+
+
+---
+
+
+
+## 4. 业务逻辑的分析与实现
+
+首先使用枚举先将所有功能给定义出来：
+
+```c
+enum{
+    OPER_INSERT = 1,
+    OPER_PRINT = 2,
+    OPER_DELETE = 3,
+    OPER_SEARCH = 4,
+    OPER_SAVE = 5,
+    OPER_LOAD = 6
+};
+```
+
+
+
+之后先说一个小改动：
+
+> 当你要往链表头部插入新节点时，本质上是要修改“链表的起点”这个指针——也就是让它从原来的第一个节点，变成你新插入的节点。
+>
+> - 如果函数签名是 `int person_insert(person *people, person *ps)`，你传进去的是“链表头指针”的一个**拷贝**，函数内部修改这个拷贝，并不会影响到外部真正存储头指针的变量。
+> - 改成 `int person_insert(person **ppeople, person *ps)`，你传进去的是“链表头指针”那个变量本身的地址（地址的地址），函数内部可以通过 `*ppeople` 直接改写外部变量，这样插入新节点后，外部的头指针就真正指向了新节点。
+>
+> ```c
+> // 修改前未使用双指针版本代码！
+> // int person_insert(person *people, person *ps)
+> // {
+> //     if (ps == NULL)
+> //         return -1;
+> //     LIST_INSERT(ps, people);
+> //     return 0;
+> // }
+> 
+> int person_insert(person **ppeople, person *ps)
+> {
+>     if (ps == NULL)
+>         return -1;
+>     LIST_INSERT(ps, *ppeople);
+>     return 0;
+> }
+> 
+> ```
+
+
+
+
+
+---
+
+
+
+最终实现功能：
+
+```c
+int insert_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    person *p = (person *)malloc(sizeof(person));
+    if (p == NULL)
+        return -2;
+
+    // name
+    // TODO: Linux下如何解决scanf数组输入溢出的问题
+    INFO("Please input name:");
+    scanf("%s", p->name);
+
+    // phone
+    INFO("Please input phone:");
+    scanf("%s", p->phone);
+
+    // add person
+
+    if (0 != person_insert(&cts->people, p))
+    {
+        INFO("insert person failed\n");
+        free(p);
+        return -3;
+    }
+
+    // add count
+    cts->count++;
+    INFO("insert person success\n");
+    INFO("name:%s,phone:%s\n", p->name, p->phone);
+    return 0;
+}
+
+int print_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    // print all
+    INFO("print all:\n");
+    person_traversal(cts->people);
+}
+
+int delete_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    char name[NAME_LENGTH];
+    INFO("Please input name:");
+    scanf("%s", name);
+
+    person *ps = person_search(cts->people, name);
+    if (ps == NULL)
+    {
+        INFO("person not found\n");
+        return -2;
+    }
+
+    // delete person
+    if (0 != person_delete(&cts->people, ps))
+    {
+        INFO("delete person failed\n");
+        return -3;
+    }
+
+    // delete count
+    cts->count--;
+    INFO("delete person success\n");
+    free(ps);
+    return 0;
+}
+
+int search_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    char name[NAME_LENGTH] = {0};
+    INFO("Please input name: ");
+    scanf("%s", name);
+
+    person *ps = person_search(cts->people, name);
+    if (ps == NULL)
+    {
+        INFO("person not found\n");
+        return -2;
+    }
+
+    // print person
+    INFO("name:%s, phone:%s\n", ps->name, ps->phone);
+    return 0;
+}
+```
+
+
+
+
+
+
+
+---
+
+
+
+## 5. 通讯录人员操作代码的调试
+
+这部分操作就是编译了一下，添加了一个显示提示：
+
+```c
+void manu_info(){
+    INFO("\n\n**************************************************\n");
+    INFO("***************  Welcome to Contacts  ************\n");
+    INFO("***************  1. Insert Entry   ***************\n");
+    INFO("***************  2. Print Entry    ***************\n");
+    INFO("***************  3. Delete Entry   ***************\n");
+    INFO("***************  4. Search Entry   ***************\n");
+    INFO("***************  5. Save Entry     ***************\n");
+    INFO("***************  6. Load Entry     ***************\n");
+    INFO("***************  0. Exit           ***************\n");
+    INFO("***************  Please select:    ***************\n");
+    INFO("**************************************************\n\n");
+}
+
+```
+
+
+
+---
+
+## 6. 通讯录添加人员操作的调试与运行
+
+这部分没什么好说的，结果如下：
+
+![image-20250428021404905](studynotes/image-20250428021404905.png)
+
+---
+
+
+
+## 7. 通讯录删除人员操作的调试与BUG解决
+
+这部分主要是解决bug：
+
+![image-20250428021459270](studynotes/image-20250428021459270.png)
+
+**删除没有删除成功！！！**
+
+> 问题出在插入元素的时候，对前向指针的链接没有设置好：
+>
+> ```c
+> #define LIST_INSERT(item, list) \
+>     do                          \
+>     {                           \
+>         if((list) != NULL) (list)->prev = (item);      \
+>         (item)->prev = NULL;      \
+>         (item)->next = (list);      \
+>         (list) = (item);            \
+>     } while (0)
+> 
+> #define LIST_REMOVE(item, list)            \
+>     do                                     \
+>     {                                      \
+>         if (item->prev != NULL)            \
+>             item->prev->next = item->next; \
+>         if (item->next != NULL)            \
+>             item->next->prev = item->prev; \
+>         if (list == item)                  \
+>             list = item->next;             \
+>         item->prev = NULL;                 \
+>         item->next = NULL;                 \
+>     } while (0)
+> ```
+>
+> 之前是：
+>
+> ```c
+> #define LIST_INSERT(item, list) \
+>     do                          \
+>     {                           \
+>         item->prev = NULL;      \
+>         item->next = list;      \
+>         list = item;            \
+>     } while (0)
+> 
+> #define LIST_REMOVE(item, list)            \
+>     do                                     \
+>     {                                      \
+>         if (item->prev != NULL)            \
+>             item->prev->next = item->next; \
+>         if (item->next != NULL)            \
+>             item->next->prev = item->prev; \
+>         if (list == item)                  \
+>             list = item->next;             \
+>         item->prev = item->next = NULL;    \
+>     } while (0)
+> 
+> ```
+>
+> 显然是错误的，缺少一句 `if((list) != NULL) (list)->prev = (item);`
+
+
+
+---
+
+
+
+## 8. 文件保存与加载的接口层实现
+
+> 学习常见的文件操作函数：
+>
+> **`fopen`**：打开一个文件，返回一个文件指针（`FILE*`）用于读写操作。
+>
+> **`fprintf`**：向文件中格式化写入内容，类似 `printf`，但是写到文件里。
+>
+> **`fflush`**：把缓冲区里的数据立即写入到文件或刷新输出流（比如及时保存）。
+>
+> **`fclose`**：关闭打开的文件，释放相关资源。
+>
+> **`feof`**：检查文件流是否已经读到文件末尾（End Of File）。
+>
+> **`fgets`**：从文件中读取一行字符串，安全地读到缓冲区里。
+
+
+
+---
+
+
+
+最终代码如下：
+
+```c
+int save_file(person *people, const char *filename)
+{
+    FILE *fp = fopen(filename, "w");
+    if (fp == NULL)
+        return -1;
+
+    while (people != NULL)
+    {
+        fprintf(fp, "Name: %s,Phone: %s\n", people->name, people->phone);
+        fflush(fp); // 刷新文件流,从而将缓冲区的内容写入文件。落盘
+        people = people->next;
+    }
+    fclose(fp);
+    return 0;
+}
+
+int parser_token(char *buffer, int length, char *name, char *phone)
+{
+    if (buffer == NULL || name == NULL || phone == NULL)
+        return -1;
+    int i = 0, j = 0, status = 0;
+    for (i = 0; i < buffer[i] != ','; i++)
+    {
+        if (buffer[i] == ' ')
+        {
+            status = 1;
+        }
+        else if (status == 1)
+        {
+            name[j++] = buffer[i];
+        }
+    }
+    status = 0;
+    j = 0;
+    for (i = i + 1; i < buffer[i] != ','; i++)
+    {
+        if (buffer[i] == ' ')
+        {
+            status = 1;
+        }
+        else if (status == 1)
+        {
+            phone[j++] = buffer[i];
+        }
+    }
+    INFO("name:%s, phone:%s\n", name, phone);
+    return 0;
+}
+
+int load_file(person **ppeople, int *count, const char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL)
+        return -1;
+    while (!feof(fp))
+    {
+        char buffer[BUFFER_LENGTH] = {0};
+        char name[NAME_LENGTH] = {0};
+        char phone[PHONE_LENGTH] = {0};
+        fgets(buffer, BUFFER_LENGTH, fp);
+
+        if (0 != parser_token(buffer, BUFFER_LENGTH, name, phone))
+        {
+            continue;
+        }
+        person *p = (person *)malloc(sizeof(person));
+        if (p == NULL)
+            return -2;
+        memcpy(p->name, name, NAME_LENGTH);
+        memcpy(p->phone, phone, PHONE_LENGTH);
+        p->next = NULL;
+        p->prev = NULL;
+        if (0 != person_insert(ppeople, p))
+        {
+            INFO("insert person failed\n");
+            free(p);
+            return -3;
+        }
+        (*count)++;
+    }
+    fclose(fp);
+    
+    return 0;
+}
+```
+
+
+
+---
+
+
+
+## 9. 文件保存业务实现
+
+
+
+```c
+int save_file(person *people, const char *filename)
+{
+    FILE *fp = fopen(filename, "w");
+    if (fp == NULL)
+        return -1;
+
+    while (people != NULL)
+    {
+        fprintf(fp, "Name: %s,Phone: %s\n", people->name, people->phone);
+        fflush(fp); // 刷新文件流,从而将缓冲区的内容写入文件。落盘
+        people = people->next;
+    }
+    fclose(fp);
+    return 0;
+}
+
+int parser_token(char *buffer, int length, char *name, char *phone)
+{
+    if (buffer == NULL || name == NULL || phone == NULL)
+        return -1;
+    if (length < MIN_TOKEN_LENGTH) // 8
+        return -2;
+    int i = 0, j = 0, status = 0;
+    for (i = 0;  buffer[i] != ','; i++)
+    {
+        if (buffer[i] == ' ')
+        {
+            status = 1;
+        }
+        else if (status == 1)
+        {
+            name[j++] = buffer[i];
+        }
+    }
+    status = 0;
+    j = 0;
+    for (i = i + 1; i < BUFFER_LENGTH; i++)
+    {
+        if (buffer[i] == ' ')
+        {
+            status = 1;
+        }
+        else if (status == 1)
+        {
+            phone[j++] = buffer[i];
+        }
+    }
+    INFO("name:%s, phone:%s\n", name, phone);
+    return 0;
+}
+
+int load_file(person **ppeople, int *count, const char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL)
+        return -1;
+    while (!feof(fp))
+    {
+        char buffer[BUFFER_LENGTH] = {0};
+        char name[NAME_LENGTH] = {0};
+        char phone[PHONE_LENGTH] = {0};
+        fgets(buffer, BUFFER_LENGTH, fp);
+
+        if (0 != parser_token(buffer, strlen(buffer), name, phone))
+        {
+            continue;
+        }
+        person *p = (person *)malloc(sizeof(person));
+        if (p == NULL)
+            return -2;
+        memcpy(p->name, name, NAME_LENGTH);
+        memcpy(p->phone, phone, PHONE_LENGTH);
+
+        if (0 != person_insert(ppeople, p))
+        {
+            INFO("insert person failed\n");
+            free(p);
+            return -3;
+        }
+        (*count)++;
+    }
+    fclose(fp);
+    return 0;
+}
+```
+
+
+
+
+
+---
+
+
+
+
+
+## 10. 通讯录调试与运行
+
+![image-20250428192954914](studynotes/image-20250428192954914.png)
+
+
+
+
+
+完整代码及备注如下：
+
+```c
+// 整体用双向链表来进行存储
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define NAME_LENGTH 16
+#define PHONE_LENGTH 32
+#define BUFFER_LENGTH 80
+#define MIN_TOKEN_LENGTH 8
+
+#define INFO printf
+
+#define LIST_INSERT(item, list)    \
+    do                             \
+    {                              \
+        if ((list) != NULL)        \
+            (list)->prev = (item); \
+        (item)->prev = NULL;       \
+        (item)->next = (list);     \
+        (list) = (item);           \
+    } while (0)
+
+#define LIST_REMOVE(item, list)            \
+    do                                     \
+    {                                      \
+        if (item->prev != NULL)            \
+            item->prev->next = item->next; \
+        if (item->next != NULL)            \
+            item->next->prev = item->prev; \
+        if (list == item)                  \
+            list = item->next;             \
+        item->prev = NULL;                 \
+        item->next = NULL;                 \
+    } while (0)
+
+/**
+ * @brief 个人信息节点
+ */
+typedef struct Person
+{
+    char name[NAME_LENGTH];
+    char phone[PHONE_LENGTH];
+    struct Person *next;
+    struct Person *prev;
+} person;
+
+/**
+ * @brief 通讯录数据结构
+ */
+typedef struct Contacts
+{
+    person *people;
+    int count;
+} contacts;
+
+// TODO：实现数据结构与逻辑实现的分离
+
+enum
+{
+    OPER_INSERT = 1,
+    OPER_PRINT = 2,
+    OPER_DELETE = 3,
+    OPER_SEARCH = 4,
+    OPER_SAVE = 5,
+    OPER_LOAD = 6
+};
+
+/**
+ * @brief 往链表头部插入一个新的联系人节点
+ * @param ppeople 链表头指针的地址
+ * @param ps 要插入的联系人节点
+ * @return 成功返回0，失败返回-1
+ */
+int person_insert(person **ppeople, person *ps)
+{
+    if (ps == NULL)
+        return -1;
+    LIST_INSERT(ps, *ppeople);
+    return 0;
+}
+
+/**
+ * @brief 从链表中删除一个联系人节点
+ * @param ppeople 链表头指针的地址
+ * @param ps 要删除的联系人节点
+ * @return 成功返回0，失败返回-1
+ */
+int person_delete(person **ppeople, person *ps)
+{
+    if (ps == NULL)
+        return -1;
+    LIST_REMOVE(ps, *ppeople);
+    return 0;
+}
+
+/**
+ * @brief 根据名字在联系人链表中查找联系人
+ * @param people 链表头指针
+ * @param name 要查找的名字
+ * @return 找到返回对应节点指针，未找到返回NULL
+ */
+person *person_search(person *people, const char *name)
+{
+    while (people != NULL)
+    {
+        if (strcmp(people->name, name) == 0)
+            return people;
+        people = people->next;
+    }
+    return NULL;
+}
+
+/**
+ * @brief 遍历打印所有联系人
+ * @param people 链表头指针
+ * @return 成功返回0
+ */
+int person_traversal(person *people)
+{
+    while (people != NULL)
+    {
+        INFO("name:%s, phone:%s\n", people->name, people->phone);
+        people = people->next;
+    }
+    return 0;
+}
+
+/**
+ * @brief 将联系人链表保存到指定文件
+ * @param people 链表头指针
+ * @param filename 文件名
+ * @return 成功返回0，失败返回-1
+ */
+int save_file(person *people, const char *filename)
+{
+    FILE *fp = fopen(filename, "w");
+    if (fp == NULL)
+        return -1;
+
+    while (people != NULL)
+    {
+        fprintf(fp, "Name: %s,Phone: %s\n", people->name, people->phone);
+        fflush(fp); // 刷新文件流,从而将缓冲区的内容写入文件。落盘
+        people = people->next;
+    }
+    fclose(fp);
+    return 0;
+}
+
+/**
+ * @brief 从读取的一行字符串中解析出名字和电话号码
+ * @param buffer 读取到的字符串缓冲区
+ * @param length 字符串长度
+ * @param name 解析出的名字
+ * @param phone 解析出的电话号码
+ * @return 成功返回0，参数错误返回-1，字符串太短返回-2
+ */
+int parser_token(char *buffer, int length, char *name, char *phone)
+{
+    if (buffer == NULL || name == NULL || phone == NULL)
+        return -1;
+    if (length < MIN_TOKEN_LENGTH) // 8
+        return -2;
+    int i = 0, j = 0, status = 0;
+    for (i = 0;  buffer[i] != ','; i++)
+    {
+        if (buffer[i] == ' ')
+        {
+            status = 1;
+        }
+        else if (status == 1)
+        {
+            name[j++] = buffer[i];
+        }
+    }
+    status = 0;
+    j = 0;
+    for (i = i + 1; i < BUFFER_LENGTH; i++)
+    {
+        if (buffer[i] == ' ')
+        {
+            status = 1;
+        }
+        else if (status == 1)
+        {
+            phone[j++] = buffer[i];
+        }
+    }
+    INFO("name:%s, phone:%s\n", name, phone);
+    return 0;
+}
+
+/**
+ * @brief 从文件中加载联系人到链表
+ * @param ppeople 链表头指针的地址
+ * @param count 联系人数量指针
+ * @param filename 文件名
+ * @return 成功返回0，文件打开失败返回-1，内存分配失败返回-2
+ */
+int load_file(person **ppeople, int *count, const char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL)
+        return -1;
+    while (!feof(fp))
+    {
+        char buffer[BUFFER_LENGTH] = {0};
+        char name[NAME_LENGTH] = {0};
+        char phone[PHONE_LENGTH] = {0};
+        fgets(buffer, BUFFER_LENGTH, fp);
+
+        if (0 != parser_token(buffer, strlen(buffer), name, phone))
+        {
+            continue;
+        }
+        person *p = (person *)malloc(sizeof(person));
+        if (p == NULL)
+            return -2;
+        memcpy(p->name, name, NAME_LENGTH);
+        memcpy(p->phone, phone, PHONE_LENGTH);
+
+        if (0 != person_insert(ppeople, p))
+        {
+            INFO("insert person failed\n");
+            free(p);
+            return -3;
+        }
+        (*count)++;
+    }
+    fclose(fp);
+    return 0;
+}
+
+/**
+ * @brief 插入新的联系人
+ * @param cts 通讯录指针
+ * @return 成功返回0，失败返回负值
+ */
+int insert_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    person *p = (person *)malloc(sizeof(person));
+    if (p == NULL)
+        return -2;
+
+    // name
+    // TODO: Linux下如何解决scanf数组输入溢出的问题
+    INFO("Please input name:");
+    scanf("%s", p->name);
+
+    // phone
+    INFO("Please input phone:");
+    scanf("%s", p->phone);
+
+    // add person
+
+    if (0 != person_insert(&cts->people, p))
+    {
+        INFO("insert person failed\n");
+        free(p);
+        return -3;
+    }
+
+    // add count
+    cts->count++;
+    INFO("insert person success\n");
+    INFO("name:%s,phone:%s\n", p->name, p->phone);
+    return 0;
+}
+
+/**
+ * @brief 打印所有联系人
+ * @param cts 通讯录指针
+ * @return 成功返回0
+ */
+int print_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    // print all
+    INFO("print all:\n");
+    person_traversal(cts->people);
+}
+
+/**
+ * @brief 删除指定联系人
+ * @param cts 通讯录指针
+ * @return 成功返回0，失败返回负值
+ */
+int delete_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    char name[NAME_LENGTH];
+    INFO("Please input name:");
+    scanf("%s", name);
+
+    person *ps = person_search(cts->people, name);
+    if (ps == NULL)
+    {
+        INFO("person not found\n");
+        return -2;
+    }
+
+    // delete person
+    if (0 != person_delete(&cts->people, ps))
+    {
+        INFO("delete person failed\n");
+        return -3;
+    }
+
+    // delete count
+    cts->count--;
+    INFO("delete person success\n");
+    free(ps);
+    return 0;
+}
+
+/**
+ * @brief 查找指定联系人
+ * @param cts 通讯录指针
+ * @return 成功返回0，未找到返回-2
+ */
+int search_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    char name[NAME_LENGTH] = {0};
+    INFO("Please input name: ");
+    scanf("%s", name);
+
+    person *ps = person_search(cts->people, name);
+    if (ps == NULL)
+    {
+        INFO("person not found\n");
+        return -2;
+    }
+
+    // print person
+    INFO("name:%s, phone:%s\n", ps->name, ps->phone);
+    return 0;
+}
+
+/**
+ * @brief 保存联系人到文件
+ * @param cts 通讯录指针
+ * @return 成功返回0
+ */
+int save_entry(contacts *cts)
+{
+    if(cts == NULL)
+        return -1;
+    INFO("Please input filename:");
+    char filename[BUFFER_LENGTH] = {0};
+    scanf("%s", filename);
+    save_file(cts->people, filename);
+}
+
+/**
+ * @brief 从文件中加载联系人
+ * @param cts 通讯录指针
+ * @return 成功返回0
+ */
+int load_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+    INFO("Please input filename:");
+    char filename[BUFFER_LENGTH] = {0};
+    scanf("%s", filename);
+    load_file(&cts->people, &cts->count, filename);
+}
+
+/**
+ * @brief 打印菜单信息
+ */
+void manu_info()
+{
+    INFO("\n\n**************************************************\n");
+    INFO("***************  Welcome to Contacts  ************\n");
+    INFO("***************  1. Insert Person  ***************\n");
+    INFO("***************  2. Print Person   ***************\n");
+    INFO("***************  3. Delete Person  ***************\n");
+    INFO("***************  4. Search Person  ***************\n");
+    INFO("***************  5. Save Files     ***************\n");
+    INFO("***************  6. Load Files     ***************\n");
+    INFO("***************  0. Exit           ***************\n");
+    INFO("***************  Please select:    ***************\n");
+    INFO("**************************************************\n\n");
+}
+
+/**
+ * @brief 主函数，程序入口
+ * @return 正常退出返回0
+ */
+int main()
+{
+    contacts *cts = (contacts *)malloc(sizeof(contacts));
+    cts->people = NULL;
+    cts->count = 0;
+    while (1)
+    {
+        manu_info();
+        int select = 0;
+        scanf("%d", &select);
+        switch (select)
+        {
+        case OPER_INSERT:
+            insert_entry(cts);
+            break;
+        case OPER_PRINT:
+            print_entry(cts);
+            break;
+        case OPER_DELETE:
+            delete_entry(cts);
+            break;
+        case OPER_SEARCH:
+            search_entry(cts);
+            break;
+        case OPER_SAVE:
+            save_entry(cts);
+            break;
+        case OPER_LOAD:
+            load_entry(cts);
+            break;
+        default:
+            goto exit;
+        }
+    }
+exit:
+    free(cts);
+    cts = NULL;
+    INFO("exit\n");
+    return 0;
+}
+
+```
+
+
+
+---
+
+
+
+## 11. 课后作业——按首字母顺序排序
+
+我的做法是定义了一个首字母排序链表的函数：
+
+```c
+**
+ * @brief 按照名字的首字母对联系人链表进行排序
+ * @param ppeople 链表头指针的地址
+ * @return 成功返回0，失败返回-1
+ */
+
+int sort_list_by_initial(person **ppeople)
+{
+    if (ppeople == NULL || *ppeople == NULL)
+        return -1;
+
+    person *sorted = NULL;
+    person *current = *ppeople;
+
+    while (current != NULL)
+    {
+        person *next = current->next;
+        // 将 current 与原链表断开
+        current->prev = current->next = NULL;
+
+        // 在 sorted 链表中找到插入位置
+        person *iter = sorted;
+        person *prev = NULL;
+        char cur_initial = tolower(current->name[0]);
+        while (iter != NULL && tolower(iter->name[0]) <= cur_initial)
+        {
+            prev = iter;
+            iter = iter->next;
+        }
+
+        if (prev == NULL)
+        {
+            // 插入到头部
+            current->next = sorted;
+            if (sorted) sorted->prev = current;
+            sorted = current;
+        }
+        else
+        {
+            // 插入到 prev 之后
+            current->next = prev->next;
+            if (prev->next) prev->next->prev = current;
+            prev->next = current;
+            current->prev = prev;
+        }
+
+        current = next;
+    }
+
+    *ppeople = sorted;
+    return 0;
+}
+```
+
+
+
+然后在两个接口函数中，插入接口以及读入接口中分别调用这个函数进行排序，这样的话可读性更强
+
+==同样做了异常排序抛出错误码==
+
+```c
+/**
+ * @brief 插入新的联系人
+ * @param cts 通讯录指针
+ * @return 成功返回0，失败返回负值
+ */
+int insert_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+
+    person *p = (person *)malloc(sizeof(person));
+    if (p == NULL)
+        return -2;
+
+    // name
+    // TODO: Linux下如何解决scanf数组输入溢出的问题
+    INFO("Please input name:");
+    scanf("%s", p->name);
+
+    // phone
+    INFO("Please input phone:");
+    scanf("%s", p->phone);
+
+    // add person
+
+    if (0 != person_insert(&cts->people, p))
+    {
+        INFO("insert person failed\n");
+        free(p);
+        return -3;
+    }
+//====================================================
+    if (0 != sort_list_by_initial(&cts->people))
+    {
+        INFO("sort list failed\n");
+        free(p);
+        return -4;
+    }
+//====================================================
+    // add count
+    cts->count++;
+    INFO("insert person success\n");
+    INFO("name:%s,phone:%s\n", p->name, p->phone);
+    return 0;
+}
+```
+
+
+
+```c
+/**
+ * @brief 从文件中加载联系人
+ * @param cts 通讯录指针
+ * @return 成功返回0，失败返回负值
+ */
+int load_entry(contacts *cts)
+{
+    if (cts == NULL)
+        return -1;
+    INFO("Please input filename:");
+    char filename[BUFFER_LENGTH] = {0};
+    scanf("%s", filename);
+    load_file(&cts->people, &cts->count, filename);
+    //==========================================================
+    if (0 != sort_list_by_initial(&cts->people))
+    {
+        INFO("sort list failed\n");
+        return -2;
+    }
+    //==========================================================
+    INFO("load file success\n");
+
+    return 0;
+}
+```
+
+至此实现功能。
+
+
+
+**当然其实有些问题没有解决：**
+
+> 通讯录同名问题，
+>
+> // TODO：实现数据结构与逻辑实现的分离
+>
+> // TODO: Linux下如何解决scanf数组输入溢出的问题
+
+**时间不够以后实现吧**
+
+
+
+---
+
+
+
+# 并发下的技术方案（锁） 
+
+
+
+## 1.多线程并发锁的项目介绍
+
+
+
+## 2.多线程并发锁的方案—互斥锁
+
+
+
+## 3.多线程并发锁的方案—自旋锁
+
+
+
+## 4.多线程并发锁的方案—原子操作
+
+
+
+## 5.线程池的使用场景与原理分析
+
+## 6.线程池的结构体定义
+
+## 7.线程池的架构分析与实现
+
+## 8.线程池初始化的实现
+
+## 9.线程池的线程回调函数实现
+
+## 10.线程池的任务添加与线程池销毁
+
+## 11.线程池入口函数实现以及调试
+
+## 12.线程池代码gdb调试与bug修改
+
 
 
 
