@@ -554,7 +554,7 @@ int main(int argc, char *argv[])
 
 
 
-## 2. 解决连字符的问题
+## 2. 课后作业——解决连字符的问题
 
 > 连字符问题我觉得分为两种：
 >
@@ -679,7 +679,7 @@ int main(int argc, char *argv[])
 
 
 
-## 3. 统计单词出现的频率
+## 3. 课后作业——统计单词出现的频率
 
 我个人的第一想法是，使用一个树来做统计。每个节点对应一个27个子节点的树==（26个字母+一个连字符）==，以此来存储英文单词。
 
@@ -2314,17 +2314,310 @@ int load_entry(contacts *cts)
 
 # 并发下的技术方案（锁） 
 
-
-
 ## 1.多线程并发锁的项目介绍
+
+以火车站买票为例，讲解并发和多线程的概念。
+
+![image-20250428220325123](studynotes/image-20250428220325123.png)
+
+
+
+代码实现这个demo如下：
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <pthread.h>
+#include <unistd.h>
+
+
+
+#define THREAD_COUNT       10
+
+void *thread_callback(void *arg)
+{
+    int *pcount = (int *)arg;
+
+    int i = 0;
+
+    while(i++<100000){
+        (*pcount)++;
+        usleep(1);
+    }
+}
+
+int main(){
+    pthread_t threadid[THREAD_COUNT] = {0};
+
+    int i = 0;
+    int count = 0;
+    for (i = 0; i < THREAD_COUNT; i++)
+    {
+        // count这个是要传递给线程的参数，传递给thread_callback函数
+        // 这里传递的是地址
+        // 也可以传递一个结构体
+        pthread_create(&threadid[i], NULL, thread_callback, &count);
+    }
+    for(i = 0; i < 100; i++)
+    {
+        printf("count = %d\n", count);
+        sleep(1);
+    }
+    return 0;
+}
+
+```
+
+
+
+
+
+输出结果如下：
+
+```c
+count = 9
+count = 57520
+count = 107284
+count = 156971
+count = 210393
+count = 268805
+count = 327916
+count = 391440
+count = 435511
+count = 498803
+count = 560886
+count = 618795
+count = 670150
+count = 734534
+count = 810670
+count = 886915
+count = 960624
+count = 999888
+count = 999888
+count = 999888
+count = 999888
+count = 999888
+```
+
+
+
+> ==**这边为什么锁死在999888呢？**==
+>
+> 我个人觉得是这一百万有那么几个撞到一起了，对共享变量进行了覆盖操作
+>
+> 下一章说！！！！
+
+
+
+
+
+---
 
 
 
 ## 2.多线程并发锁的方案—互斥锁
 
+> 从汇编的角度来分析刚刚的问题：
+>
+> ```c
+> count++   ==>   
+> 
+> move[count],  eax;
+> inc eax;
+> mov eax,  [count];
+> ```
+>
+> 正常情况：
+>
+> <img src="studynotes/image-20250428224733001.png" alt="image-20250428224733001" style="zoom:67%;" />
+>
+> 非正常情况：
+>
+> <img src="studynotes/image-20250428224758955.png" alt="image-20250428224758955" style="zoom:67%;" />
+
+
+
+---
+
+
+
+
+
+> **如何来解决这个问题呢？**
+>
+> 本质上`count`是一个临界变量，这种操作，我们就需要加锁来进行操作
+>
+> 第一个使用**互斥锁**！！！
+
+
+
+互斥锁的代码如下：
+
+```c
+......
+pthread_mutex_t mutex;
+
+void *thread_callback(void *arg)
+{
+    int *pcount = (int *)arg;
+    int i = 0;
+    while (i++ < 100000)
+    {
+#if 0
+        (*pcount)++;
+
+#else
+        pthread_mutex_lock(&mutex);
+        (*pcount)++;
+        pthread_mutex_unlock(&mutex);
+#endif
+        usleep(1);
+    }
+}
+
+int main()
+{
+    pthread_t threadid[THREAD_COUNT] = {0};
+
+    int i = 0;
+    int count = 0;
+
+    pthread_mutex_init(&mutex, NULL);
+	......
+}
+
+```
+
+
+
+
+
+**加锁/解锁指令**：单次操作约需 **20-100ns**（现代CPU）
+
+**性能测试数据**：
+
+|    操作类型    | 耗时（百万次） |
+| :------------: | :------------: |
+|  无锁原子操作  |      12ms      |
+|   互斥锁保护   |     210ms      |
+| 无保护（错误） |      8ms       |
+
+
+
+
+
+---
+
 
 
 ## 3.多线程并发锁的方案—自旋锁
+
+**在4核CPU上测试不同方案的吞吐量（操作/秒）：**
+
+|      方案       | 吞吐量 | CPU利用率 |
+| :-------------: | :----: | :-------: |
+| 无保护（错误）  | 1.2亿  |   400%    |
+|     互斥锁      | 860万  |    95%    |
+|     自旋锁      | 2100万 |   380%    |
+| 读写锁（80%读） | 4100万 |   320%    |
+|    原子操作     | 9800万 |   390%    |
+
+==自旋锁优化互斥锁的性能消耗！！！！！==
+
+代码实现如下：
+
+```c
+#define WITHOUT_LOCK 0
+#define MUTEX_FLAG 0
+#define SPINLOCK_FLAG 1
+
+
+#if MUTEX_FLAG
+    pthread_mutex_t mutex;
+#elif SPINLOCK_FLAG
+    pthread_spinlock_t spinlock;
+#endif
+
+
+#if WITHOUT_LOCK
+        (*pcount)++;
+#elif MUTEX_FLAG
+        pthread_mutex_lock(&mutex);
+        (*pcount)++;
+        pthread_mutex_unlock(&mutex);
+#elif SPINLOCK_FLAG
+        pthread_spin_lock(&spinlock);
+        (*pcount)++;
+        pthread_spin_unlock(&spinlock);
+#endif
+        usleep(1);
+    }
+}
+
+#if MUTEX_FLAG
+    pthread_mutex_init(&mutex, NULL);
+#elif SPINLOCK_FLAG
+    pthread_spin_init(&spinlock, PTHREAD_PROCESS_SHARED);
+#endif
+
+```
+
+
+
+---
+
+> **自旋锁跟互斥锁的区别！**
+>
+> 简单来说：
+>
+> **互斥锁：**其他线程到达这里的时候会先休眠，释放CPU性能
+>
+> **自旋锁：**其他线程到达这里的时候会在原地进行while遍历，等待在这里，所以需要多核的CPU，否则就起不到等待的效果！！！！需求CPU性能比较高。
+>
+> - **原子性操作**：通过CPU的`LOCK`前缀指令（如x86的`lock cmpxchg`）实现原子测试并设置
+> - **忙等待循环**：不会让出CPU，持续检测锁状态（对比Mutex会让线程休眠）
+> - **内存屏障**：隐含的`memory barrier`保证操作顺序性
+>
+> |      指标      |      自旋锁      |        互斥锁        |
+> | :------------: | :--------------: | :------------------: |
+> |   获取锁耗时   |     20-50 ns     |      100-200 ns      |
+> | 上下文切换次数 |        0         | 至少2次（休眠+唤醒） |
+> |  最佳适用场景  | 锁持有时间 < 1μs |   锁持有时间 > 1μs   |
+> |   CPU利用率    |  高（持续轮询）  |  低（主动让出CPU）   |
+
+
+
+### 选择锁的黄金法则 
+
+1. **先思考锁的粒度**
+
+   - 自旋锁适合保护`i++`这样的单指令操作
+   - 互斥锁适合保护`文件写入`这种复杂操作
+
+   
+
+2. **参考等待时间阈值**
+
+   mermaid
+
+   ```mermaid
+   graph LR
+   A{预计等待时间} -->|≤1μs| B[自旋锁]
+   A -->|＞1μs| C[互斥锁]
+   ```
+
+3. **混合锁策略**（现代操作系统常用）
+
+   - 先自旋等待1000次循环（约1μs）
+   - 仍未获得锁则转为休眠等待
+
+
+
+
+
+---
 
 
 
@@ -2332,19 +2625,370 @@ int load_entry(contacts *cts)
 
 
 
+简单来说就是，如果我们的汇编只有一条操作，这就不不会存在竞争的问题了。
+
+```c
+move[count],  eax;
+inc eax;
+mov eax,  [count];
+
+===> 一条指令
+```
+
+
+
+具体的实现如下：
+
+```c
+int inc(int *value, int add){
+    int old;
+    __asm__ volatile(
+        "lock; xaddl %2, %1"
+        : "=a"(old)
+        : "m"(*value), "a"(add)
+        : "cc", "memory"
+    );
+}
+
+void *thread_callback(void *arg)
+{
+    int *pcount = (int *)arg;
+
+    int i = 0;
+
+    while (i++ < 100000)
+    {
+#if WITHOUT_LOCK
+        (*pcount)++;
+#elif MUTEX_FLAG
+        pthread_mutex_lock(&mutex);
+        (*pcount)++;
+        pthread_mutex_unlock(&mutex);
+#elif SPINLOCK_FLAG
+        pthread_spin_lock(&spinlock);
+        (*pcount)++;
+        pthread_spin_unlock(&spinlock);
+#elif INC_FLAG
+        inc(pcount, 1);
+#endif
+        usleep(1);
+    }
+}
+```
+
+
+
+1. **无锁（WITHOUT_LOCK）**
+
+```c
+(*pcount)++; // 无同步
+```
+
+- 优势：
+  - 速度最快，无任何同步开销。
+- 劣势：
+  - **线程不安全**：`++`操作不是原子的，多线程并发会导致竞争条件（Race Condition），最终结果不可预测。
+  - 仅适用于单线程场景，多线程中完全不可靠。
+- **结论**：
+  ❌ 绝对不适用于多线程环境。
+
+------
+
+2. **互斥锁（MUTEX_FLAG）**
+
+```c
+pthread_mutex_lock(&mutex);
+(*pcount)++;
+pthread_mutex_unlock(&mutex);
+```
+
+- 优势：
+  - **线程安全**：通过锁保证临界区的原子性。
+  - 适用于复杂操作：可保护多个变量或复杂逻辑的临界区。
+  - 公平性：等待锁的线程会休眠（让出CPU），避免忙等待浪费资源。
+- 劣势：
+  - **性能开销大**：加锁/解锁涉及内核态切换，上下文切换代价高，尤其在高竞争场景下。
+  - 可能引发死锁：需谨慎设计锁的获取顺序。
+- **适用场景**：
+  ✅ 临界区较复杂（如涉及I/O、多变量操作）或可能阻塞的场景。
+
+------
+
+3. **自旋锁（SPINLOCK_FLAG）**
+
+```c
+pthread_spin_lock(&spinlock);
+(*pcount)++;
+pthread_spin_unlock(&spinlock);
+```
+
+- 优势：
+  - **线程安全**：通过忙等待保证原子性。
+  - **低延迟**：无上下文切换，适合极短临界区。
+  - 多核高效：在锁很快被释放时，忙等待的代价低于休眠唤醒的开销。
+- 劣势：
+  - **CPU资源浪费**：线程在等待锁时持续占用CPU（忙等待）。
+  - 单核性能差：可能导致死锁（持有锁的线程无法运行）。
+- **适用场景**：
+  ✅ 多核CPU、临界区极短（如简单赋值）且低竞争的场景。
+
+------
+
+4. **原子操作（INC_FLAG）**
+
+```c
+inc(pcount, 1); // 通过 lock xaddl 实现原子递增
+```
+
+- 优势：
+  - **线程安全**：硬件级原子指令（如`lock xaddl`）确保操作不可分割。
+  - **性能最优**：无锁机制，直接利用CPU指令，无上下文切换或忙等待。
+- 劣势：
+  - **功能受限**：仅支持简单操作（如加减、交换），无法保护复杂逻辑。
+  - 平台依赖性：需特定CPU指令支持（但x86普遍支持）。
+- **适用场景**：
+  ✅ 简单原子操作（如计数器递增），追求极致性能。
+
+------
+
+**总结对比**
+
+|   方式   | 线程安全 |       性能       |          适用场景          |
+| :------: | :------: | :--------------: | :------------------------: |
+|   无锁   |    ❌     | 最高（但不可靠） |             无             |
+|  互斥锁  |    ✅     |        低        | 复杂临界区、可能阻塞的操作 |
+|  自旋锁  |    ✅     |        中        | 极短临界区、多核低竞争环境 |
+| 原子操作 |    ✅     |     **最高**     |  简单原子操作（如计数器）  |
+
+------
+
+**最终选择建议**
+
+- **最优选择**：**原子操作（INC_FLAG）**
+  在代码中仅需原子递增的场景下，原子操作是最佳选择，既安全又高效。
+- **次优选择**：自旋锁（若原子操作不可用）
+  适用于极短操作，但需确保多核低竞争。
+- **保守选择**：互斥锁
+  通用性强，但性能开销较大，适合复杂逻辑保护。
+
+**避免使用无锁方式**，除非能接受结果错误。
+
+
+
+
+
+
+
+---
+
+
+
+## 课后作业——CAS（compare and swap）
+
+在并发编程中，**CAS（Compare-And-Swap，比较并交换）** 是一种关键的原子操作，用于实现无锁数据结构。以下是CAS的实现及其应用详解：
+
+1. **作用**：
+   比较内存位置的值与预期值，若相等则更新为新值；否则不修改。无论是否成功，返回该位置的旧值。
+2. **原子性**：
+   操作由硬件（如x86的`lock cmpxchg`指令）保证不可分割，确保多线程环境下的线程安全。
+
+
+
+> 想象你和朋友一起修改黑板上的数字：
+>
+> 1. **你要做**：把数字从 `5` 改成 `6`。
+>
+> 2. **传统加锁方式**：你先把黑板锁住，确认是 `5` 后改成 `6`，再解锁。其他人必须等你完成才能操作。
+>
+> 3. **CAS 无锁方式：**你直接看黑板的数字是`5`，然后快速写下 `6`，但写之前再看一眼黑板：
+>   - 如果还是 `5`，说明没人动过，修改成功！
+>    - 如果变成其他数字（比如 `7`），说明有人抢先改了，你重新开始（再看数字→计算→尝试修改）。
+>
+> **核心思想**：不用锁，而是通过“看一眼→修改前再确认”的方式，避免冲突。
+
+
+
+
+
+---
+
+
+
+代码实现如下：
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <pthread.h>
+#include <unistd.h>
+
+#define THREAD_COUNT 10
+
+// 自定义CAS函数（使用GCC内置原子操作）
+int cas(int* ptr, int oldval, int newval) {
+    return __atomic_compare_exchange_n(ptr, &oldval, newval, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+void* thread_callback(void* arg) {
+    int* pcount = (int*)arg;
+    int i = 0;
+    while (i++ < 100000) {
+        int old_val, new_val;
+        do {
+            old_val = *pcount;       // 读取当前值
+            new_val = old_val + 1;   // 计算新值
+        } while (!cas(pcount, old_val, new_val)); // 循环直到CAS成功
+        usleep(1);
+    }
+    return NULL;
+}
+
+int main() {
+    pthread_t threadid[THREAD_COUNT] = {0};
+    int i = 0;
+    int count = 0;
+
+    for (i = 0; i < THREAD_COUNT; i++) {
+        pthread_create(&threadid[i], NULL, thread_callback, &count);
+    }
+
+    // 输出逻辑完全不变
+    for (i = 0; i < 100; i++) {
+        printf("count = %d\n", count);
+        sleep(1);
+    }
+
+    return 0;
+}
+```
+
+
+
+**优势对比**
+
+|   方式   | 性能 | 线程安全 | 代码复杂度 |
+| :------: | :--: | :------: | :--------: |
+|  互斥锁  |  低  |    ✅     |    简单    |
+|  自旋锁  |  中  |    ✅     |    简单    |
+| 原子操作 |  高  |    ✅     |    中等    |
+| **CAS**  |  高  |    ✅     |    较高    |
+
+- **CAS 适用场景**：简单原子操作（如计数器），且追求极致性能时。
+- **注意**：如果操作复杂（比如修改多个变量），CAS 会很难实现，此时建议用锁。
+
+
+
+
+
+---
+
+
+
 ## 5.线程池的使用场景与原理分析
+
+![image-20250429003940708](studynotes/image-20250429003940708.png)
+
+**【可以将写日志的任务交给线程池】**
+
+针对一个日志段准备好了，将执行任务的操作交给一个线程池，（落盘操作）。
+
+
+
+> **【形象解释】**
+>
+> 银行营业厅，办理业务的人，对于柜员而言，这些都是**任务**。
+>
+> **营业厅里面的公示牌：**防止多个办业务的人，在一一个柜员里面办业务。两个柜员同时为一个人办业务服务。
+>
+> 管理组件使得营业厅能够正常有序的工作。
+
+![image-20250429005118372](studynotes/image-20250429005118372.png)
+
+
+
+
+
+---
+
+
 
 ## 6.线程池的结构体定义
 
+
+
+
+
+
+
+
+
+---
+
+
+
 ## 7.线程池的架构分析与实现
+
+
+
+
+
+
+
+---
+
+
 
 ## 8.线程池初始化的实现
 
+
+
+
+
+
+
+
+
+---
+
+
+
 ## 9.线程池的线程回调函数实现
+
+
+
+
+
+
+
+
+
+---
+
+
 
 ## 10.线程池的任务添加与线程池销毁
 
+
+
+
+
+---
+
+
+
 ## 11.线程池入口函数实现以及调试
+
+
+
+
+
+
+
+---
+
+
 
 ## 12.线程池代码gdb调试与bug修改
 
