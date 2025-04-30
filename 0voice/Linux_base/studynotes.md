@@ -2916,9 +2916,23 @@ int main() {
 
 ## 6.线程池的结构体定义
 
+还是要通过链表的形式来实现：
+
+![image-20250430005624459](studynotes/image-20250430005624459.png)
 
 
 
+```c
+typedef struct nTask
+{
+    void (*task_func)(void *arg);
+    void *user_data;c
+    
+    nTask *next;
+    nTask *prev;
+} nTask;
+
+```
 
 
 
@@ -2929,6 +2943,90 @@ int main() {
 
 
 ## 7.线程池的架构分析与实现
+
+> 这个线程池的代码可以生动地类比为银行中的客户服务流程，以下是从银行用户和柜员角度的概念解释：
+>
+> ------
+>
+> ### **1. 银行客户（nTask）**
+>
+> - **结构体角色**：每个客户代表一个待办任务（如存款、转账）。
+> - **任务属性：**
+>   - `task_func`：客户要办理的具体业务（如取款函数）。
+>   - `user_data`：客户提供的业务材料（如金额、账户信息）。
+>   - `next/prev`：客户在排队队列中的位置，前一个和后一个客户是谁。
+>
+> ------
+>
+> ### **2. 银行柜员（nWorker）**
+>
+> - **结构体角色**：每个柜员对应一个线程，负责处理客户请求。
+> - 工作流程：
+>   - **空闲时**：柜员在等待区休息（线程通过`pthread_cond_wait`休眠）。
+>   - **工作时**：当有客户到来时，柜员被唤醒（`pthread_cond_signal`），从队列中取出客户任务并处理（执行`task_func`）。
+>   - `threadid`：柜员的工号，唯一标识一个柜员（线程ID）。
+>
+> ------
+>
+> ### **3. 银行大堂经理（nManager）**
+>
+> - **结构体角色**：协调整个银行（线程池）的运作。
+> - 核心职责：
+>   - **管理客户队列（`tasks`）**：维护等待中的客户列表（双向链表），确保先到先服务。
+>   - **调度柜员（`workers`）**：管理所有柜员的列表，动态调整资源。
+>   - **锁和信号（`mutex`和`cond`）：**
+>     - **锁（`mutex`）**：类似叫号机，保证同一时间只有一个柜员操作队列（避免多个柜员抢同一个客户）。
+>     - **信号（`cond`）**：当新客户到来时广播通知柜员（“有客户需要服务！”），或柜员处理完任务后检查是否需要继续等待。
+
+
+
+整体接口如下四个：
+
+```c
+
+typedef struct nTask
+{
+    void (*task_func)(void *arg);
+    void *user_data;
+
+    nTask *next;
+    nTask *prev;
+} nTask;
+
+typedef struct nWorker
+{
+    pthread_t threadid;
+
+    nWorker *next;
+    nWorker *prev;
+} nWorker;
+
+typedef struct nManager
+{
+    nTask *tasks;
+    nWorker *workers;
+
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+} nManager;
+
+// 创建一个线程池
+void *nThreadPoolCallback(void *arg)
+{
+}
+
+int nThreadPoolCreate(nManager *pool, int nWorkers)
+{
+}
+
+int nThreadPoolDestroy(nManager *pool, int nWorkers)
+{
+}
+
+int nThreadPoolPushTask(nManager *pool, nTask *task)
+{
+}
+```
 
 
 
