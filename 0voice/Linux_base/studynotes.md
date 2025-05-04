@@ -3040,7 +3040,71 @@ int nThreadPoolPushTask(nManager *pool, nTask *task)
 
 ## 8.线程池初始化的实现
 
+> ### **详细步骤解析（结合银行场景）**
+>
+> 1. **检查银行大厅有效性**
+>    - 代码：`if (pool == NULL) return -1;`
+>    - 类比：银行经理要先确认营业厅地址有效，否则无法开业。
+> 2. **确保至少1个柜员**
+>    - 代码：`if (numWorkers <1) numWorkers=1;`
+>    - 类比：即使经理忘记招人，至少要有一个柜员值班，否则无法营业。
+> 3. **安装排队系统（mutex初始化）**
+>    - 代码：`pthread_mutex_init(&pool->mutex, NULL);`
+>    - 类比：安装叫号机，保证客户不会一窝蜂挤到柜台（并发安全）。
+> 4. **安装叫号显示屏（cond初始化）**
+>    - 原代码错误：原代码中`blank_cond`是局部变量，正确应初始化`pool->cond`
+>    - 正确代码：`pthread_cond_init(&pool->cond, NULL);`
+>    - 类比：柜员需要看显示屏才知道是否有客户，未初始化=显示屏没电！
+> 5. **招聘柜员（循环创建nWorker）**
+>    - **分配工位**：`worker = malloc(sizeof(nWorker))`
+>      → 给柜员分配工作台（内存空间）
+>    - **绑定银行**：`worker->manager = pool`
+>      → 告诉柜员他们属于这个银行，可以访问大厅资源
+>    - **创建线程**：`pthread_create`
+>      → 人力资源部安排柜员上岗，执行`nThreadPoolCallback`（待命状态）
+>    - **加入队列**：`LIST_INSERT(worker, pool->workers)`
+>      → 将新柜员加入空闲队列，等待叫号屏通知
 
+
+
+```c
+int nThreadPoolCreate(ThreadPool *pool, int numWorkers)
+{
+    if(pool == NULL)
+        return -1;
+
+    //
+    if(numWorkers<1) numWorkers = 1;
+    
+    // 线程池的条件变量，用于通知工作线程有新的任务到来
+    pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;  
+
+    // 线程池的互斥锁，用于保护任务队列的访问
+    pthread_mutex_init(&pool->mutex, NULL);
+    int i = 0;
+    for(i = 0; i < numWorkers; i++)
+    {
+        nWorker *worker = (nWorker *)malloc(sizeof(nWorker));
+        if(worker == NULL){
+            perror("malloc failed");
+            return -2;
+        }
+        memset(worker, 0, sizeof(nWorker));
+        // 创建工作线程
+        worker->manager = pool;
+
+        if(pthread_create(&worker->threadid, NULL, nThreadPoolCallback, (void *)worker) != 0)
+        {
+            perror("pthread_create failed");
+            free(worker);
+            return -3;
+        }
+        // 将工作线程添加到线程池的工作线程列表中
+        LIST_INSERT(worker, pool->workers);
+        return 0;
+    }
+}
+```
 
 
 
@@ -3054,7 +3118,35 @@ int nThreadPoolPushTask(nManager *pool, nTask *task)
 
 ## 9.线程池的线程回调函数实现
 
+```
+// Callback function != Task function
+// This function is executed by the worker thread when it starts 
+// and waits for tasks to be added to the task queue.
+// When a task is added, the worker thread will execute the task function.
+void *nThreadPoolCallback(void *arg)
+{
+    nWorker *worker = (nWorker *)arg;
 
+
+    while (1)
+    {
+        pthread_mutex_lock(&worker->manager->mutex);
+
+        while (worker->manager->tasks == NULL){
+            pthread_cond_wait(&worker->manager->cond, &worker->manager->mutex);
+        }
+        
+        nTask *task = worker->manager->tasks;
+        LIST_REMOVE(task, worker->manager->tasks);
+
+        pthread_mutex_unlock(&worker->manager->mutex);
+        task->task_func(task->user_data);
+    }
+
+    free(worker);
+    return NULL;
+}
+```
 
 
 
@@ -3068,6 +3160,44 @@ int nThreadPoolPushTask(nManager *pool, nTask *task)
 
 ## 10.线程池的任务添加与线程池销毁
 
+![image-20250504011427453](C:\Users\90338\AppData\Roaming\Typora\typora-user-images\image-20250504011427453.png)
+
+
+
+具体的代码实现如图下如下：
+
+```c
+int nThreadPoolDestroy(ThreadPool *pool, int numWorkers)
+{
+    nWorker *worker = NULL;
+    for(worker = pool->workers; worker != NULL; worker = worker->next)
+    {
+        worker->terminate = 1;
+    }
+    pthread_mutex_lock(&pool->mutex);
+    pthread_cond_broadcast(&pool->cond); // 唤醒所有工作线程
+    pthread_mutex_unlock(&pool->mutex);
+
+    pool->workers = NULL;
+    pool->tasks = NULL;
+
+    return 0;
+}
+
+int nThreadPoolPushTask(ThreadPool *pool, nTask *task)
+{
+    pthread_mutex_lock(&pool->mutex);
+
+    LIST_INSERT(task, pool->tasks);
+
+    pthread_cond_signal(&pool->cond); // 唤醒一个工作线程
+
+    pthread_mutex_unlock(&pool->mutex);
+}
+```
+
+
+
 
 
 
@@ -3078,9 +3208,55 @@ int nThreadPoolPushTask(nManager *pool, nTask *task)
 
 ## 11.线程池入口函数实现以及调试
 
+ok,接下来是按照视频编写的入口函数实现：
+
+```c
+#define THREAD_INIT_COUNT 20
+#define TASK_INIT_SIZE 1000
+
+void task_entry(void *arg)
+{
+    nTask *task = (nTask *)task;
+    int idx = *(int *)task->user_data;
+    printf("idx: %d", idx);
+    free(task->user_data);
+    free(task);
+}
+
+int main(void)
+{
+    ThreadPool pool;
+
+    nThreadPoolCreate(&pool, THREAD_INIT_COUNT);
+
+    int i = 0;
+    for (int i = 0; i < TASK_INIT_SIZE; ++i)
+    {
+        nTask *task = (nTask *)malloc(sizeof(nTask));
+        if (task == NULL)
+        {
+            perror("malloc error");
+            exit(1);
+        }
+        memset(task, 0, sizeof(nTask));
+
+        task->task_func = task_entry;
+        task->user_data = malloc(sizeof(int));
+
+        *(int *)task->user_data = i;
+
+        nThreadPoolPushTask(&pool, task);
+    }
+}
+```
 
 
 
+
+
+> 接下来编译是通过了，但是存在一些问题需要解决，留到下一个阶段去解决
+>
+> **其实问题不算少的**
 
 
 
@@ -3090,7 +3266,221 @@ int nThreadPoolPushTask(nManager *pool, nTask *task)
 
 ## 12.线程池代码gdb调试与bug修改
 
+> gdb调试：
+>
+> 适合小项目的调试，可以进行单步调试。
 
+首先给出我写的代码的版本：
 
+```
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
 
+#define LIST_INSERT(item, list)    \
+    do                             \
+    {                              \
+        if ((list) != NULL)        \
+            (list)->prev = (item); \
+        (item)->prev = NULL;       \
+        (item)->next = (list);     \
+        (list) = (item);           \
+    } while (0)
+
+#define LIST_REMOVE(item, list)            \
+    do                                     \
+    {                                      \
+        if (item->prev != NULL)            \
+            item->prev->next = item->next; \
+        if (item->next != NULL)            \
+            item->next->prev = item->prev; \
+        if (list == item)                  \
+            list = item->next;             \
+        item->prev = NULL;                 \
+        item->next = NULL;                 \
+    } while (0)
+
+typedef struct nTask
+{
+    void (*task_func)(void *arg);
+    void *user_data;
+
+    struct nTask *next;
+    struct nTask *prev;
+} nTask;
+
+typedef struct nWorker
+{
+    pthread_t threadid;
+    int terminate; // 线程是否终止
+
+    struct nManager *manager;
+
+    struct nWorker *next;
+    struct nWorker *prev;
+} nWorker;
+
+typedef struct nManager
+{
+    struct nTask *tasks;
+    struct nWorker *workers;
+
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+} ThreadPool, nManager;
+
+// Callback function != Task function
+// This function is executed by the worker thread when it starts
+// and waits for tasks to be added to the task queue.
+// When a task is added, the worker thread will execute the task function.
+void *nThreadPoolCallback(void *arg)
+{
+    nWorker *worker = (nWorker *)arg;
+
+    while (1)
+    {
+        pthread_mutex_lock(&worker->manager->mutex);
+
+        while (worker->manager->tasks == NULL)
+        {
+            if (worker->terminate)
+                break;
+            pthread_cond_wait(&worker->manager->cond, &worker->manager->mutex);
+        }
+        if (worker->terminate)
+        {
+            pthread_mutex_unlock(&worker->manager->mutex);
+            // 线程池被销毁，退出线程
+            break;
+        }
+
+        nTask *task = worker->manager->tasks;
+        LIST_REMOVE(task, worker->manager->tasks);
+
+        pthread_mutex_unlock(&worker->manager->mutex);
+        task->task_func(task);
+    }
+
+    free(worker);
+    return NULL;
+}
+
+int nThreadPoolCreate(ThreadPool *pool, int numWorkers)
+{
+    if (pool == NULL)
+        return -1;
+
+    //
+    if (numWorkers < 1)
+        numWorkers = 1;
+
+    memset(pool, 0, sizeof(ThreadPool));
+
+    // 线程池的条件变量，用于通知工作线程有新的任务到来
+    pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;
+
+    // 线程池的互斥锁，用于保护任务队列的访问
+    pthread_mutex_init(&pool->mutex, NULL);
+
+    int i = 0;
+    for (i = 0; i < numWorkers; i++)
+    {
+        nWorker *worker = (nWorker *)malloc(sizeof(nWorker));
+        if (worker == NULL)
+        {
+            perror("malloc failed");
+            return -2;
+        }
+        memset(worker, 0, sizeof(nWorker));
+        // 创建工作线程
+        worker->manager = pool;
+
+        if (pthread_create(&worker->threadid, NULL, nThreadPoolCallback, (void *)worker) != 0)
+        {
+            perror("pthread_create failed");
+            free(worker);
+            return -3;
+        }
+        // 将工作线程添加到线程池的工作线程列表中
+        LIST_INSERT(worker, pool->workers);
+    }
+    return 0;
+}
+
+int nThreadPoolDestroy(ThreadPool *pool, int numWorkers)
+{
+    nWorker *worker = NULL;
+    for (worker = pool->workers; worker != NULL; worker = worker->next)
+    {
+        worker->terminate = 1;
+    }
+    pthread_mutex_lock(&pool->mutex);
+    pthread_cond_broadcast(&pool->cond); // 唤醒所有工作线程
+    pthread_mutex_unlock(&pool->mutex);
+
+    pool->workers = NULL;
+    pool->tasks = NULL;
+
+    return 0;
+}
+
+int nThreadPoolPushTask(ThreadPool *pool, nTask *task)
+{
+    pthread_mutex_lock(&pool->mutex);
+
+    LIST_INSERT(task, pool->tasks);
+
+    pthread_cond_signal(&pool->cond); // 唤醒一个工作线程
+
+    pthread_mutex_unlock(&pool->mutex);
+}
+
+#if 1
+
+#define THREAD_INIT_COUNT 20
+#define TASK_INIT_SIZE 1000
+
+void task_entry(void *arg)
+{
+    nTask *task = (nTask *)arg;
+    int idx = *(int *)task->user_data;
+    printf("idx: %d", idx);
+    free(task->user_data);
+    free(task);
+}
+
+int main(void)
+{
+    ThreadPool pool;
+
+    nThreadPoolCreate(&pool, THREAD_INIT_COUNT);
+
+    // printf("create success");
+
+    int i = 0;
+    for (int i = 0; i < TASK_INIT_SIZE; ++i)
+    {
+        nTask *task = (nTask *)malloc(sizeof(nTask));
+        if (task == NULL)
+        {
+            perror("malloc error");
+            exit(1);
+        }
+        memset(task, 0, sizeof(nTask));
+
+        task->task_func = task_entry;
+        task->user_data = malloc(sizeof(int));
+
+        *(int *)task->user_data = i;
+
+        nThreadPoolPushTask(&pool, task);
+    }
+}
+
+#else
+
+#endif
+```
 
