@@ -3160,7 +3160,7 @@ void *nThreadPoolCallback(void *arg)
 
 ## 10.线程池的任务添加与线程池销毁
 
-![image-20250504011427453](C:\Users\90338\AppData\Roaming\Typora\typora-user-images\image-20250504011427453.png)
+![image-20250504011427453](studynotes\image-20250504011427453.png)
 
 
 
@@ -3272,7 +3272,7 @@ int main(void)
 
 首先给出我写的代码的版本：
 
-```
+```c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3484,3 +3484,376 @@ int main(void)
 #endif
 ```
 
+
+
+> 分析问题：
+>
+> #### ❌ 差异 & 问题一：打印缺少换行符
+>
+> ```c
+> printf("idx: %d", idx);
+> ```
+>
+> 标准输出缓冲区没有 `\n` 时不会立刻刷出，在多线程中尤其明显。加上 `\n` 后，输出才会及时出现。
+>
+> ------
+>
+> #### ❌ 差异 & 问题二：线程未释放资源
+>
+> `nThreadPoolDestroy()` 中只是设置了 `terminate`，但没有调用 `pthread_join` 等待线程退出。
+>
+> ------
+>
+> #### ✅ 其他差异（非错误但建议调整）
+>
+> - 你初始化条件变量 `cond` 是多余的，可以直接用 `pthread_cond_init`。
+> - 你的线程函数返回了 `NULL`，这是对的，官方代码漏了 `return NULL;`。
+> - `main()` 中未调用销毁函数 `nThreadPoolDestroy()`，也未 `getchar()` 等待线程执行完。
+
+
+
+
+
+修改后完整代码：
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+
+/// 链表插入宏（头插法）
+#define LIST_INSERT(item, list) \
+    do { \
+        if ((list) != NULL) (list)->prev = (item); \
+        (item)->prev = NULL; \
+        (item)->next = (list); \
+        (list) = (item); \
+    } while (0)
+
+/// 链表移除宏
+#define LIST_REMOVE(item, list) \
+    do { \
+        if (item->prev != NULL) item->prev->next = item->next; \
+        if (item->next != NULL) item->next->prev = item->prev; \
+        if (list == item) list = item->next; \
+        item->prev = NULL; \
+        item->next = NULL; \
+    } while (0)
+
+/// @brief 任务结构体
+typedef struct nTask {
+    void (*task_func)(void *arg); ///< 任务函数指针
+    void *user_data;              ///< 用户自定义数据参数
+
+    struct nTask *next, *prev;
+} nTask;
+
+/// @brief 工作线程结构体
+typedef struct nWorker {
+    pthread_t threadid;           ///< 线程 ID
+    int terminate;                ///< 是否终止线程
+
+    struct nManager *manager;     ///< 指向线程池结构体
+
+    struct nWorker *next, *prev;
+} nWorker;
+
+/// @brief 线程池结构体
+typedef struct nManager {
+    struct nTask *tasks;          ///< 任务链表
+    struct nWorker *workers;      ///< 线程链表
+
+    pthread_mutex_t mutex;        ///< 互斥锁
+    pthread_cond_t cond;          ///< 条件变量
+} ThreadPool, nManager;
+
+/**
+ * @brief 工作线程函数
+ * 
+ * 每个线程启动后，进入循环，等待并执行任务。
+ * 
+ * @param arg 指向 nWorker 的指针
+ * @return void* 
+ */
+void *nThreadPoolCallback(void *arg) {
+    nWorker *worker = (nWorker *)arg;
+
+    while (1) {
+        pthread_mutex_lock(&worker->manager->mutex);
+
+        // 如果没有任务，等待条件变量
+        while (worker->manager->tasks == NULL) {
+            if (worker->terminate) break;
+            pthread_cond_wait(&worker->manager->cond, &worker->manager->mutex);
+        }
+
+        if (worker->terminate) {
+            pthread_mutex_unlock(&worker->manager->mutex);
+            break;
+        }
+
+        // 从队列中获取任务
+        nTask *task = worker->manager->tasks;
+        LIST_REMOVE(task, worker->manager->tasks);
+
+        pthread_mutex_unlock(&worker->manager->mutex);
+
+        task->task_func(task); // 执行任务
+    }
+
+    free(worker);
+    return NULL;
+}
+
+/**
+ * @brief 创建线程池
+ * 
+ * 初始化线程池并启动若干工作线程
+ * 
+ * @param pool 线程池结构体指针
+ * @param numWorkers 线程数量
+ * @return int 0 成功，非0失败
+ */
+int nThreadPoolCreate(ThreadPool *pool, int numWorkers) {
+    if (pool == NULL) return -1;
+    if (numWorkers < 1) numWorkers = 1;
+
+    memset(pool, 0, sizeof(ThreadPool));
+
+    // 初始化条件变量和互斥锁
+    pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;
+    memcpy(&pool->cond, &blank_cond, sizeof(pthread_cond_t));
+
+    pthread_mutex_t blank_mutex = PTHREAD_MUTEX_INITIALIZER;
+    memcpy(&pool->mutex, &blank_mutex, sizeof(pthread_mutex_t));
+
+    // 创建工作线程
+    for (int i = 0; i < numWorkers; i++) {
+        nWorker *worker = (nWorker *)malloc(sizeof(nWorker));
+        if (!worker) return -2;
+
+        memset(worker, 0, sizeof(nWorker));
+        worker->manager = pool;
+
+        if (pthread_create(&worker->threadid, NULL, nThreadPoolCallback, worker) != 0) {
+            free(worker);
+            return -3;
+        }
+
+        LIST_INSERT(worker, pool->workers);
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 销毁线程池
+ * 
+ * 设置终止标志，并唤醒所有线程
+ * 
+ * @param pool 线程池指针
+ * @return int 0 成功
+ */
+int nThreadPoolDestroy(ThreadPool *pool, int numWorkers) {
+    for (nWorker *worker = pool->workers; worker != NULL; worker = worker->next) {
+        worker->terminate = 1;
+    }
+
+    pthread_mutex_lock(&pool->mutex);
+    pthread_cond_broadcast(&pool->cond); // 唤醒所有线程
+    pthread_mutex_unlock(&pool->mutex);
+
+    pool->workers = NULL;
+    pool->tasks = NULL;
+
+    return 0;
+}
+
+/**
+ * @brief 将任务推入线程池
+ * 
+ * @param pool 线程池
+ * @param task 新任务
+ * @return int 0 成功
+ */
+int nThreadPoolPushTask(ThreadPool *pool, nTask *task) {
+    pthread_mutex_lock(&pool->mutex);
+    LIST_INSERT(task, pool->tasks);
+    pthread_cond_signal(&pool->cond); // 唤醒一个线程
+    pthread_mutex_unlock(&pool->mutex);
+    return 0;
+}
+
+/// 测试常量
+#define THREAD_INIT_COUNT 20
+#define TASK_INIT_SIZE 1000
+
+/**
+ * @brief 任务入口函数
+ * 
+ * @param arg 指向任务结构体
+ */
+void task_entry(void *arg) {
+    nTask *task = (nTask *)arg;
+    int idx = *(int *)task->user_data;
+    printf("任务编号：%d\n", idx);
+    free(task->user_data);
+    free(task);
+}
+
+/**
+ * @brief 主函数入口
+ * 
+ * 初始化线程池并推送多个任务
+ * 
+ * @return int 
+ */
+int main(void) {
+    ThreadPool pool;
+    nThreadPoolCreate(&pool, THREAD_INIT_COUNT);
+
+    for (int i = 0; i < TASK_INIT_SIZE; ++i) {
+        nTask *task = (nTask *)malloc(sizeof(nTask));
+        memset(task, 0, sizeof(nTask));
+
+        task->task_func = task_entry;
+        task->user_data = malloc(sizeof(int));
+        *(int *)task->user_data = i;
+
+        nThreadPoolPushTask(&pool, task);
+    }
+
+    getchar(); // 阻塞防止线程退出
+    return 0;
+}
+
+```
+
+
+
+
+
+实现流程如下：
+
+```mermaid
+graph TD
+    A[main函数启动] --> B[创建线程池 nThreadPoolCreate]
+    B --> C{创建多个工作线程}
+    C -->|每个线程| D[nThreadPoolCallback回调函数]
+    A --> E[生成任务并调用 nThreadPoolPushTask]
+    E --> F[将任务加入任务队列]
+    F --> G[唤醒一个等待中的工作线程]
+    D --> H[从任务队列取出任务]
+    H --> I[执行任务函数 task_func]
+    A --> Z[等待用户输入 等待输入]
+```
+
+
+
+> ### 🔹 `pthread_create`
+>
+> 创建一个新线程：
+>
+> ```c
+> pthread_create(&threadid, NULL, thread_func, arg);
+> ```
+>
+> - 第1个参数：线程 ID
+> - 第2个参数：线程属性（通常填 NULL）
+> - 第3个参数：线程函数（启动时运行）
+> - 第4个参数：传给线程函数的参数
+>
+> ### 🔹 `pthread_mutex_lock`
+>
+> 加锁。确保同一时间只有一个线程访问共享资源。
+>
+> ### 🔹 `pthread_mutex_unlock`
+>
+> 释放锁，让其他线程可以访问共享资源。
+>
+> ### 🔹 `pthread_cond_wait`
+>
+> 等待条件变量。当某个条件为“真”时（如有新任务），线程被唤醒。
+>  需要与 `pthread_mutex_lock()` 一起使用。
+>
+> ### 🔹 `pthread_cond_signal`
+>
+> 唤醒一个等待线程。
+>
+> ### 🔹 `pthread_cond_broadcast`
+>
+> 唤醒所有等待线程。
+
+
+
+
+
+
+
+# 数据库mysql项目实战 (16小节)
+
+## 1. 数据库mysql安装与远程连接，常见问题
+
+主要就是几个指令：
+
+```bash
+sudo apt-get install mysql-server-5.7    // 安装mysql
+
+mysql -u root -p  // 访问mysql
+
+show databases;
+
+use mysql;
+
+
+```
+
+
+
+![image-20250430005624459](studynotes/image-20250505013800838.png)
+
+
+
+
+
+
+
+
+
+---
+
+
+
+
+
+## 2. 数据库用户授权与登录
+
+## 3. 数据库建模与建库建表
+
+## 4. mysql数据库编程连接与插入数据（上）
+
+## 5. mysql数据库编程连接与插入数据（下）
+
+## 6. mysql数据库的查询操作 (1)
+
+## 7.mysql数据库的查询操作 (2)
+
+## 8. mysql数据删除与存储过程调用（上）
+
+## 9. mysql数据删除与存储过程调用（下）
+
+## 10. mysql数据库 图片存储 read_image
+
+## 11. mysql数据库 图片存储 read_image（下）
+
+## 12. mysql数据库 图片存储 mysql_write（1）
+
+## 13. mysql数据库 图片存储 mysql_write（2）
+
+## 14. mysql数据库 图片存储 mysql_read（1）
+
+## 15. mysql数据库 图片存储 mysql_read（2）
+
+## 16. mysql数据库图片存储 逻辑实现与程序运行，思考练习
