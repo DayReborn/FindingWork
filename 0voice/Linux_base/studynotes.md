@@ -3816,6 +3816,121 @@ use mysql;
 
 
 
+![image-20250507224556895](studynotes/image-20250507224556895.png)
+
+整体来说就是——**远程连接数据库**
+
+
+
+> 报错解决：
+>
+> ![image-20250507225355087](studynotes/image-20250507225355087.png)
+>
+> 这边解决的话主要是要修改mysql的配置文件：
+>
+> ![image-20250507230115984](studynotes/image-20250507230115984.png)
+>
+> 首先第一步修改conf文件中的bind-adress改为0.0.0.0
+>
+> ![image-20250507232107397](studynotes/image-20250507232107397.png)
+>
+> 这时候发生第二个报错：
+>
+> ![image-20250507232139260](studynotes/image-20250507232139260.png)
+>
+> 服务器限制了root的远程登陆：
+>
+> 所以我们需要开放权限！！！！
+>
+> ```mysql
+> show databases;
+> 
+> use mysql;
+> 
+> show tables;
+> 
+> select * from user;
+> ```
+>
+> ![image-20250507232547841](studynotes/image-20250507232547841.png)
+>
+> 
+>
+> 可以看到我们的root被限制在localhost中进行登录
+>
+> ```mysql
+> select Host, User from user where User='root'
+> ```
+>
+> ![image-20250507232813823](studynotes/image-20250507232813823.png)
+>
+> ==不要修改root！！！！！！！！！！！！！！！！==
+>
+> 
+
+---
+
+
+
+
+
+## 2. 数据库用户授权与登录
+
+**这边选择重新创建一个用户：**
+
+```mysql
+CREATE USER 'admin'@'%' IDENTIFIED BY 'Zzx123456@'; // % 的含义是任何地址都可以登录
+GRANT ALL PRIVILEGES ON *.* TO 'admin'@'%' WITH GRANT OPTION;  // 允许他操作所有的数据库
+FLUSH PRIVILEGES;
+EXIT;
+```
+
+![image-20250507233210840](studynotes/image-20250507233210840.png)
+
+**成功连接！！！**
+
+`GRANT ALL PRIVILEGES ON *.* TO 'admin'@'%' WITH GRANT OPTION;`这个是赋予所有的增删改查的权限，但是可以只给部分权限；
+
+`grant select on mysql.* to 'admin'@'%'` 这边只赋予select 的权限
+
+如果用下面的权限我们创建不了新的用户：必须使用拥有所有权限的用户来创建。
+
+```mysql
+create user 'test'@'%' identified by 'Zzx123456@'
+```
+
+![image-20250507234513591](studynotes/image-20250507234513591.png)
+
+
+
+---
+
+
+
+
+
+## 3. 数据库建模与建库建表
+
+数据库建模，建立一个数据表格的联系！！！
+
+```mysql
+DROP DATABASE ZZX_DB; # 删除数据库
+
+CREATE DATABASE ZZX_DB; # 创建数据库
+
+SHOW DATABASES;
+
+USE ZZX_DB; # 使用数据库
+
+CREATE TABLE TBL_USER( # 创建user表，尽量使用大写
+    U_ID INT PRIMARY KEY AUTO_INCREMENT,
+    U_NAME VARCHAR(32), 
+    U_GENGDER VARCHAR(8)
+);
+
+SHOW TABLES; # 显示table
+```
+
 
 
 
@@ -3828,32 +3943,759 @@ use mysql;
 
 
 
-## 2. 数据库用户授权与登录
 
-## 3. 数据库建模与建库建表
 
 ## 4. mysql数据库编程连接与插入数据（上）
 
+![image-20250508220430381](studynotes/image-20250508220430381.png)
+
+
+
+安装开发工具
+
+```bash
+sudo apt-get install libmysqlclient-dev
+```
+
+
+
+插入的mysql语句如下：
+
+```mysql
+SELECT * FROM TBL_USER;
+INSERT TBL_USER(U_NAME, U_GENGDER) VALUE("zzx", "man");
+```
+
+
+
+
+
+---
+
+
+
+
+
+
+
 ## 5. mysql数据库编程连接与插入数据（下）
+
+整体的插入代码如下：
+
+```c
+#include <mysql.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+// C U R D
+
+#define ZZX_DB_SERVER_IP "192.168.5.128"
+#define ZZX_DB_SERVER_PORT 3306
+
+#define ZZX_DB_SERVER_NAME "admin"
+#define ZZX_DB_SERVER_PASSWORD "Zzx123456@"
+#define ZZX_DB_DEFAULTDB "ZZX_DB"
+
+#define SQL_INSERT_TBL_USER "INSERT TBL_USER(U_NAME, U_GENGDER) VALUE('wxm' , 'woman');"
+
+int main()
+{
+
+    MYSQL mysql;
+
+    if (mysql_init(&mysql) == NULL)
+    {
+        printf("mysql_init() failed: %s\n", mysql_error(&mysql));
+    }
+
+    if (mysql_real_connect(&mysql, ZZX_DB_SERVER_IP,
+                           ZZX_DB_SERVER_NAME,
+                           ZZX_DB_SERVER_PASSWORD,
+                           ZZX_DB_DEFAULTDB,
+                           ZZX_DB_SERVER_PORT,
+                           NULL,
+                           0) == 0)
+    {
+        printf("mysql_real_connect() failed: %s\n", mysql_error(&mysql));
+    }
+    else
+    {
+        printf("mysql_real_connect() success\n");
+    }
+
+    // mysql --> insert
+    if (mysql_real_query(&mysql, SQL_INSERT_TBL_USER, strlen(SQL_INSERT_TBL_USER)) != 0)
+    {
+        printf("mysql_real_query() failed: %s\n", mysql_error(&mysql));
+    }
+    else
+    {
+        printf("mysql_real_query() success\n");
+    }
+}
+```
+
+
+
+执行指令：
+
+```bash
+gcc -o Mysql Mysql.c -I /usr/include/mysql/ -lmysqlclient
+```
+
+
+
+#### **`mysql_init()`**
+
+**作用**：初始化一个 `MYSQL` 对象，用于存储数据库连接的基本信息。
+
+- **参数**：通常传入一个 `MYSQL*` 指针；如果传入 `NULL`，会动态分配内存。
+- **返回值：**
+  - 成功：返回指向 `MYSQL` 结构的指针。
+  - 失败：返回 `NULL`（如内存不足）。
+
+```c
+MYSQL mysql;  // 定义一个 MYSQL 对象
+if (mysql_init(&mysql) == NULL) {
+    printf("mysql_init() failed: %s\n", mysql_error(&mysql));
+}
+```
+
+------
+
+#### **2. `mysql_real_connect()`**
+
+**作用**：建立与 MySQL 数据库的实际连接。
+**参数**：
+
+```c
+MYSQL *mysql_real_connect(
+    MYSQL *mysql,           // mysql_init() 初始化的对象
+    const char *host,       // 数据库服务器 IP（如 "localhost" 或 "192.168.5.128"）
+    const char *user,       // 用户名（如 "admin"）
+    const char *passwd,     // 密码（如 "Zzx123456@"）
+    const char *db,         // 默认数据库名（如 "ZZX_DB"）
+    unsigned int port,      // 端口号（3306）
+    const char *unix_socket,// 通常为 NULL
+    unsigned long client_flag // 连接选项（通常为 0）
+);
+```
+
+**返回值**：
+
+- 成功：返回传入的 `MYSQL*` 指针。
+- 失败：返回 `NULL`。
+
+```c
+if (mysql_real_connect(&mysql, ZZX_DB_SERVER_IP,
+                       ZZX_DB_SERVER_NAME,
+                       ZZX_DB_SERVER_PASSWORD,
+                       ZZX_DB_DEFAULTDB,
+                       ZZX_DB_SERVER_PORT,
+                       NULL, 0) == NULL) {
+    printf("Connection failed: %s\n", mysql_error(&mysql));
+}
+```
+
+------
+
+#### **3. `mysql_real_query()`**
+
+**作用**：执行 SQL 语句（无结果集的查询，如 `INSERT/UPDATE/DELETE`）。
+**参数**：
+
+```c
+int mysql_real_query(
+    MYSQL *mysql,          // 已连接的 MYSQL 对象
+    const char *stmt_str,  // SQL 语句字符串
+    unsigned long length   // SQL 语句长度
+);
+```
+
+**返回值**：
+
+- 成功：返回 `0`。
+- 失败：返回非零值（通过 `mysql_error()` 获取错误信息）。
+
+**使用示例**：
+
+```c
+#define SQL_INSERT_TBL_USER "INSERT INTO TBL_USER(U_NAME, U_GENGDER) VALUES('wxm', 'woman');"
+if (mysql_real_query(&mysql, SQL_INSERT_TBL_USER, strlen(SQL_INSERT_TBL_USER)) != 0) {
+    printf("Query failed: %s\n", mysql_error(&mysql));
+}
+```
+
+------
+
+#### **4. `mysql_error()`**
+
+**作用**：获取最后一次 MySQL 操作的错误信息。
+**示例**：
+
+```c
+printf("Error: %s\n", mysql_error(&mysql));
+```
+
+------
+
+#### **5. `mysql_close()`（补充代码缺失部分）**
+
+**作用**：关闭连接并释放 `MYSQL` 对象占用的资源。
+**必要性**：务必在程序结束时调用，防止内存泄漏。
+
+```c
+mysql_close(&mysql);  // 代码中应添加在 main() 函数末尾
+```
+
+
+
+
+
+
+
+---
+
+
 
 ## 6. mysql数据库的查询操作 (1)
 
-## 7.mysql数据库的查询操作 (2)
+```c
+int zzx_mysql_select(MYSQL *mysql){
+    // 1. 发送查询请求
+    if (mysql_real_query(mysql, SQL_SELECT_TBL_USER, strlen(SQL_INSERT_TBL_USER)) != 0)
+    {
+        printf("mysql_real_query() failed: %s\n", mysql_error(mysql));
+        return -1;
+    }
+    else
+    {
+        printf("mysql_real_query() success\n");
+    }
 
-## 8. mysql数据删除与存储过程调用（上）
+    // 2. 存储结果集
+    MYSQL_RES *result = mysql_store_result(mysql);
+    if (result == NULL)
+    {
+        printf("mysql_store_result() failed: %s\n", mysql_error(mysql));
+        return -2;
+    }
+    else
+    {
+        printf("mysql_store_result() success\n");
+    }
 
-## 9. mysql数据删除与存储过程调用（下）
+    // 3. 分析有多少行列
+    int rows = mysql_num_rows(result);
+    printf("rows = %d\n", rows);
 
-## 10. mysql数据库 图片存储 read_image
+    int fields = mysql_num_fields(result);
+    printf("fields = %d\n", fields);
+    
+    // 4. 遍历结果集
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != NULL)
+    {
+        for (int i = 0; i < fields; i++)
+        {
+            printf("%s ", row[i] ? row[i] : "NULL");
+        }
+        printf("\n");
+    }
 
-## 11. mysql数据库 图片存储 read_image（下）
+    // 5. 释放结果集
+    mysql_free_result(result);
+    return 0;
 
-## 12. mysql数据库 图片存储 mysql_write（1）
+}
+```
 
-## 13. mysql数据库 图片存储 mysql_write（2）
 
-## 14. mysql数据库 图片存储 mysql_read（1）
 
-## 15. mysql数据库 图片存储 mysql_read（2）
+最终结果：
 
-## 16. mysql数据库图片存储 逻辑实现与程序运行，思考练习
+```bash
+zhenxing@ubuntu:~/share/mysql$ ./Mysql 
+mysql_real_connect() success
+mysql_real_query() success
+mysql_store_result() success
+rows = 8
+fields = 3
+1 zzx man 
+2 wxm woman 
+3 wxm woman 
+4 wxm woman 
+5 wxm woman 
+6 wxm woman 
+7 wxm woman 
+8 wxm woman 
+zzx_mysql_select() success
+```
+
+
+
+
+
+---
+
+
+
+## 7. mysql数据删除与存储过程调用
+
+直接使用：
+
+```mysql
+DELETE FROM TBL_USER WHERE U_NAME= 'wxm';
+```
+
+这边会报错：
+
+```mysql
+0	10	01:01:02	DELETE FROM TBL_USER WHERE U_NAME= 'wxm'	Error Code: 1175. You are using safe update mode and you tried to update a table without a WHERE that uses a KEY column. 
+ To disable safe mode, toggle the option in Preferences -> SQL Editor and reconnect.	0.000 sec
+```
+
+
+
+这边是因为mysql在5.6之后只支持**==主键删除！！！==**，也就是我们的`U_ID`, 所以要修改！！！
+
+
+
+```mysql
+SET SQL_SAFE_UPDATES = 0;
+DELETE FROM TBL_USER WHERE U_NAME= 'wxm';
+SET SQL_SAFE_UPDATES = 1;
+```
+
+
+
+再引入一个概念——**存储过程**
+
+```mysql
+DELIMITER ##
+CREATE PROCEDURE PROC_DELETE_USER(IN UNAME VARCHAR(32))
+BEGIN
+SET SQL_SAFE_UPDATES=0;
+DELETE FROM TBL_USER WHERE U_NAME=UNAME;
+SET SQL_SAFE_UPDATES=1;
+END##
+```
+
+这边简单来说就是要定义一个结束符`##`，也可以是其他的`@@`之类的
+
+
+
+==**这边需要再benchmark中小闪电运行一下！！！**==
+
+
+
+---
+
+
+
+## 8. mysql数据库 图片存储 read_image
+
+
+
+> 整个流程：
+>
+> 1. 准备好一张图片。并且将图片读取进来read
+> 2. xxxx,xxxx,mysql_write_image
+> 3. mysql_read_image
+> 4. 写入磁盘
+
+![image-20250510172741449](studynotes/image-20250510172741449.png)
+
+代码实现：
+
+```c
+int read_image()(char *filename, char *buffer){
+    if (filename == NULL || buffer == NULL)
+    {
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    
+    FILE *fp = fopen(filename, "rb");
+    if (fp == NULL)
+    {
+        printf("Failed to open file: %s\n", filename);
+        return -2;
+    }
+    // file size
+    fseek(fp, 0, SEEK_END);
+    int length = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    // read file
+    int read_size = fread(buffer, 1, length, fp);
+    if (read_size != length)
+    {
+        printf("Failed to read file: %s\n", filename);
+        fclose(fp);
+        return -3;
+    }
+    fclose(fp);
+    printf("Read file: %s, size: %d\n", filename, length);
+    return read_size;
+}
+
+
+int write_image(char *filename, char *buffer, int length){
+    if(filename == NULL || buffer == NULL || length <= 0){
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    FILE *fp = fopen(filename, "wb+");
+    if(fp == NULL){
+        printf("Failed to open file: %s\n", filename);
+        return -2;
+    }
+    int write_size = fwrite(buffer, 1, length, fp);
+    if(write_size != length){
+        printf("Failed to write file: %s\n", filename);
+        fclose(fp);
+        return -3;
+    }
+    fclose(fp);
+    printf("Write file: %s, size: %d\n", filename, length);
+    return write_size;
+}
+```
+
+
+
+---
+
+
+
+## 9. mysql数据库 图片存储 mysql_write
+
+
+
+首先需要再数据库中加入一列图片格式
+
+```mysql
+ALTER TABLE TBL_USER ADD U_IMG BLOB;
+```
+
+
+
+同时引入一个`STATEMENT`概念，声明；
+
+```C
+#define SQL_INSERT_IMG_USER "INSERT TBL_USER(U_NAME, U_GENGDER, U_IMG) VALUE('wxm' , 'woman', ?);"
+```
+
+
+
+后面具体的函数实现如下：
+
+```c
+int mysql_write_image(MYSQL *handle, char *buffer, int length){
+    if (handle == NULL || buffer == NULL || length <= 0){
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    
+    MYSQL_STMT *stmt = mysql_stmt_init(handle);
+    int ret = mysql_stmt_prepare(stmt, SQL_INSERT_IMG_USER, strlen(SQL_INSERT_IMG_USER));
+    if(ret != 0){
+        printf("mysql_stmt_prepare() failed: %s\n", mysql_error(handle));
+        mysql_stmt_close(stmt);
+        return -2;
+    }
+
+    MYSQL_BIND param = {0};
+
+    param.buffer_type = MYSQL_TYPE_LONG_BLOB;
+    param.buffer = NULL;
+    param.is_null = 0;
+    param.length = NULL;
+    ret = mysql_stmt_bind_param(stmt, &param);
+    if(ret != 0){
+        printf("mysql_stmt_bind_param() failed: %s\n", mysql_error(handle));
+        mysql_stmt_close(stmt);
+        return -3;
+    }
+
+    ret = mysql_stmt_send_long_data(stmt, 0, buffer, length);
+    if(ret != 0){
+        printf("mysql_stmt_send_long_data() failed: %s\n", mysql_error(handle));
+        mysql_stmt_close(stmt);
+        return -4;
+    }
+
+    ret = mysql_stmt_execute(stmt);
+    if(ret != 0){
+        printf("mysql_stmt_execute() failed: %s\n", mysql_error(handle));
+        mysql_stmt_close(stmt);
+        return -5;
+    }
+
+    ret = mysql_stmt_close(stmt);
+    if(ret != 0){
+        printf("mysql_stmt_close() failed: %s\n", mysql_error(handle));
+        return -6;
+    }
+
+    printf("mysql_write_image() success\n");
+    return 0;
+}
+```
+
+
+
+这边来个形象的介绍这个代码！！！
+
+> 这个函数的作用就像一个快递员，负责把图片打包并安全地送到MySQL数据库的指定位置。下面我会用快递流程的比喻，结合代码逐部分讲解：
+>
+> ---
+>
+> ### **一、整体功能**
+> 这是一个专门给数据库"寄快递"的函数，把二进制图片数据（比如用户头像）安全存入MySQL数据库。就像快递员要检查包裹、填快递单、分批运输一样，函数会做参数检查、准备SQL语句、分段发送图片数据，最终完成数据库写入。
+>
+> ---
+>
+> ### **二、分步拆解**
+>
+> #### **1. 参数检查（安检环节）**
+> ```c
+> if (handle == NULL || buffer == NULL || length <= 0){
+>     printf("Invalid arguments\n");
+>     return -1;
+> }
+> ```
+> - **功能**：就像快递员先检查包裹是否完整。这里检查三个关键参数：
+>   - `handle`：数据库连接是否有效（有没有拿到快递站的地址）
+>   - `buffer`：图片数据是否存在（包裹里有没有东西）
+>   - `length`：数据大小是否合法（包裹重量是否合理）
+> - **错误处理**：任意一项不通过，直接返回-1，拒绝服务。
+>
+> ---
+>
+> #### **2. 准备快递单（初始化预处理语句）**
+> ```c
+> MYSQL_STMT *stmt = mysql_stmt_init(handle);
+> ```
+> - **功能**：相当于向快递站申请一张空白快递单。
+> - **作用**：`mysql_stmt_init()`创建了一个预处理语句对象，后续所有操作（填单、发货）都基于这个对象。
+>
+> ---
+>
+> #### **3. 填写快递单（准备SQL模板）**
+> ```c
+> int ret = mysql_stmt_prepare(stmt, SQL_INSERT_IMG_USER, strlen(SQL_INSERT_IMG_USER));
+> ```
+> - **功能**：预先在快递单上写好收件人信息和格式。假设`SQL_INSERT_IMG_USER`是类似：
+>   ```sql
+>   INSERT INTO user_images (image_data) VALUES (?)
+>   ```
+>   `?` 是一个占位符，表示稍后要填入图片数据。
+> - **作用**：`mysql_stmt_prepare()`将SQL语句编译成模板，提高效率且防SQL注入（安全措施）。
+>
+> ---
+>
+> #### **4. 打包说明（绑定参数）**
+> ```c
+> MYSQL_BIND param = {0};
+> param.buffer_type = MYSQL_TYPE_LONG_BLOB; // 声明包裹类型是"大件二进制"
+> param.buffer = NULL;       // 暂时不需要具体数据
+> param.is_null = 0;         // 明确说这个包裹不是空的
+> param.length = NULL;       // 长度稍后通过其他方式传递
+> 
+> ret = mysql_stmt_bind_param(stmt, &param);
+> ```
+> - **功能**：告诉数据库快递的包裹类型是"大件二进制"（BLOB），但先不放入实物（`buffer=NULL`），因为大件要分批运输。
+> - **关键点**：这里只是声明参数类型，实际数据通过后续的`send_long_data`发送，避免一次性加载大图到内存。
+>
+> ---
+>
+> #### **5. 分批发货（发送图片数据）**
+> ```c
+> ret = mysql_stmt_send_long_data(stmt, 0, buffer, length);
+> ```
+> - **功能**：像用多辆卡车运输大件货物。把图片数据`buffer`分批次发送到数据库，防止内存爆满。
+> - **细节**：
+>   - 参数`0`对应SQL中的第一个`?`（索引从0开始）。
+>   - 如果图片很大，可以多次调用此函数，每次发送一部分。
+>
+> ---
+>
+> #### **6. 正式寄出（执行SQL）**
+> ```c
+> ret = mysql_stmt_execute(stmt);
+> ```
+> - **功能**：所有货物到齐后，正式按下"发货"按钮，让数据库执行插入操作。
+> - **对比**：相当于快递员确认所有包裹已装车，开始运输。
+>
+> ---
+>
+> #### **7. 清理现场（关闭语句）**
+> ```c
+> ret = mysql_stmt_close(stmt);
+> ```
+> - **功能**：就像快递员送完货后回收快递单，释放资源。
+> - **重要性**：防止内存泄漏，必须清理预处理语句。
+>
+> ---
+>
+> ### **三、错误处理（异常流程）**
+> - **错误码**：-1到-6分别代表不同阶段的错误，比如：
+>   - -2：填快递单失败（SQL语法错误）
+>   - -4：运输途中翻车（网络中断）
+> - **统一动作**：每次出错都立即关闭当前快递单（`mysql_stmt_close`），避免占用资源。
+>
+> ---
+>
+> ### **四、核心函数总结表**
+> | 函数名                      | 比喻           | 作用                               |
+> | --------------------------- | -------------- | ---------------------------------- |
+> | `mysql_stmt_init`           | 申请快递单     | 创建预处理语句对象                 |
+> | `mysql_stmt_prepare`        | 填写快递单模板 | 编译SQL语句，设定参数占位符        |
+> | `mysql_stmt_bind_param`     | 声明包裹类型   | 绑定参数类型（这里是BLOB）         |
+> | `mysql_stmt_send_long_data` | 分批运输大件   | 分段发送二进制数据，适合处理大文件 |
+> | `mysql_stmt_execute`        | 正式发货       | 执行预处理语句，插入数据           |
+> | `mysql_stmt_close`          | 回收快递单     | 释放资源                           |
+>
+> ---
+>
+> ### **五、为什么用预处理语句？**
+> 1. **防SQL注入**：通过参数化查询，分离SQL与数据（比如用户上传的图片名中有特殊字符也不怕）。
+> 2. **高效复用**：一次编译多次执行，适合频繁插入操作。
+> 3. **支持大文件**：`send_long_data`专门处理BLOB类型，避免内存问题。
+>
+> ---
+>
+> 通过这个流程，即使是大图片也能安全高效地存入数据库，每个环节都有明确的检查和错误处理，就像一个专业可靠的快递系统。
+
+
+
+
+
+---
+
+
+
+## 10. mysql数据库 图片存储 mysql_read
+
+```c
+int mysql_read_image(MYSQL *handle, char *buffer, int length)
+{
+    if (handle == NULL || buffer == NULL || length <= 0)
+    {
+        printf("Invalid arguments\n");
+        return -1;
+    }
+
+    MYSQL_STMT *stmt = mysql_stmt_init(handle);
+    int ret = mysql_stmt_prepare(stmt, SQL_SELECT_IMG_USER, strlen(SQL_INSERT_IMG_USER));
+    if (ret != 0)
+    {
+        printf("mysql_stmt_prepare() failed: %s\n", mysql_error(handle));
+        mysql_stmt_close(stmt);
+        return -2;
+    }
+    MYSQL_BIND result = {0};
+    result.buffer_type = MYSQL_TYPE_LONG_BLOB;
+    unsigned long total_length = 0;
+    result.length = &total_length;
+
+    ret = mysql_stmt_bind_result(stmt, &result);
+    if (ret != 0)
+    {
+        printf("mysql_stmt_bind_result() failed: %s\n", mysql_error(handle));
+        mysql_stmt_close(stmt);
+        return -3;
+    }
+
+    ret = mysql_stmt_execute(stmt);
+    if (ret != 0)
+    {
+        printf("mysql_stmt_execute() failed: %s\n", mysql_error(handle));
+        mysql_stmt_close(stmt);
+        return -4;
+    }
+
+    ret = mysql_stmt_store_result(stmt);
+    if (ret != 0)
+    {
+        printf("mysql_stmt_store_result() failed: %s\n", mysql_error(handle));
+        mysql_stmt_close(stmt);
+        return -5;
+    }
+
+    // 如果只有一项可以不要while
+    while (1)
+    {
+        ret = mysql_stmt_fetch(stmt);
+        if (ret != 0 && ret != MYSQL_DATA_TRUNCATED)
+        {
+            printf("mysql_stmt_fetch() failed: %s\n", mysql_error(handle));
+            break;
+        }
+        int start = 0;
+        while (start < (int)total_length)
+        {
+            result.buffer = buffer + start;
+            result.buffer_length = 1;
+            mysql_stmt_fetch_column(stmt, &result, 0, start);
+            start += result.buffer_length;
+        }
+    }
+    mysql_stmt_free_result(stmt);
+    ret = mysql_stmt_close(stmt);
+    if (ret != 0)
+    {
+        printf("mysql_stmt_close() failed: %s\n", mysql_error(handle));
+        return -6;
+    }
+    printf("mysql_read_image() success\n");
+    return total_length;
+}
+```
+
+
+
+
+
+
+
+
+
+---
+
+
+
+## 11. mysql数据库图片存储 逻辑实现与程序运行，思考练习
+
+```c
+// mysql --> insert image
+    printf("case: mysql --> insert image\n");
+    char buffer[FILE_IMAGE_LENGTH] = {0};
+    int length = read_image("test.jpg", buffer);
+    if (length < 0)
+    {
+        printf("read_image() failed\n");
+        goto Exit;
+    }
+    printf("read_image() success\n");
+
+    mysql_write_image(&mysql, buffer, length);
+
+    printf("mysql_write_image() success\n");
+
+    memset(buffer, 0, FILE_IMAGE_LENGTH);
+    length = mysql_read_image(&mysql, buffer, FILE_IMAGE_LENGTH);
+    write_image("test1.jpg", buffer, length);
+    if (length < 0)
+    {
+        printf("mysql_read_image() failed\n");
+        goto Exit;
+    }
+    printf("mysql_read_image() success\n");
+
+```
+
+测试成功！！！！
+
+![image-20250512014154585](studynotes/image-20250512014154585.png)
