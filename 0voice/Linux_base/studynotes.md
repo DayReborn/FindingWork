@@ -4699,3 +4699,992 @@ int mysql_read_image(MYSQL *handle, char *buffer, int length)
 测试成功！！！！
 
 ![image-20250512014154585](studynotes/image-20250512014154585.png)
+
+
+
+
+
+## 12. 课后作业
+
+
+
+实现一个Mysql连接池
+
+
+
+
+
+
+
+
+
+
+
+
+
+# DNS协议与请求 (8小节)
+
+本章节主要目的——学习DNS协议，熟悉UDP编程。
+
+
+
+## 1. DNS协议分析与项目介绍
+
+首先使用命令查看我们的网站域名对应的地址;
+
+```bash
+zhenxing@ubuntu:~/share$ nslookup www.baidu.com
+Server:         192.168.5.2
+Address:        192.168.5.2#53
+
+Non-authoritative answer:
+www.baidu.com   canonical name = www.a.shifen.com.
+Name:   www.a.shifen.com
+Address: 180.101.49.44
+Name:   www.a.shifen.com
+Address: 180.101.51.73
+```
+
+- 有的域名对应一个地址，有的对应多个地址
+- 有的对应ipv地址，有的对应ipv6地址。
+
+
+
+使用wireshark进行DNS抓包：
+
+![image-20250514000359395](studynotes/image-20250514000359395.png)
+
+
+
+> 具体来看：
+>
+> ![image-20250514001128645](studynotes/image-20250514001128645.png)
+>
+> 抓包如上，整体来看与协议也是完全符合的：
+>
+> ![image-20250514001153124](studynotes/image-20250514001153124.png)
+
+
+
+---
+
+
+
+> 这边实际上就可以看到真正的细节了：
+>
+> ![image-20250514001939726](studynotes/image-20250514001939726.png)
+>
+> ![image-20250514001955951](studynotes/image-20250514001955951.png)
+
+
+
+---
+
+
+
+> 这边需要理解一下这个递归的概念：
+>
+> ![image-20250514002052891](studynotes/image-20250514002052891.png)
+
+
+
+---
+
+> 
+>
+> ![image-20250514002745165](studynotes/image-20250514002745165.png)
+>
+> 
+>
+> ![image-20250514002758401](studynotes/image-20250514002758401.png)
+
+
+
+---
+
+
+
+整个流程就是通过网关地址223.5.5.5不断的去递归查找到我们需要的域名对应的地址
+
+![image-20250514002655675](studynotes/image-20250514002655675.png)
+
+
+
+---
+
+
+
+最后我们会得到一个回复的DNS包（可以看到多了一个answer）
+
+![image-20250514002918367](studynotes/image-20250514002918367.png)
+
+
+
+![image-20250514003112388](studynotes/image-20250514003112388.png)
+
+
+
+
+
+## 2. DNS请求头定义与域名查询原则
+
+![image-20250514003950160](studynotes/image-20250514003950160.png)
+
+
+
+
+
+> 首先对于我们的请求的name部分的话，我们要了解一点：
+>
+> **DNS会自动将域名变为这一级域名的长度：**
+>
+> ```
+> Ovoice.com;
+> Name:60voice3com
+> 
+> www.0voice.com
+> Name:3www60voice3com
+> ```
+>
+> 简单来说这边这样做，是因为我们根据域名来查询地址的时候，是通过树状结构（多叉的哈夫曼树）来进行查询的。
+>
+> 给过来这些数字，可以方便我们从树结构中去寻找我们需要的地址。
+
+
+
+
+
+
+
+![image-20250514011144439](studynotes/image-20250514011144439.png)
+
+参照这个定义两个结构体出来
+
+```c
+typedef struct dns_header{
+    unsigned short id;
+    unsigned short flags;
+
+    unsigned short questions;
+    unsigned short answers;
+    
+    unsigned short authority;
+    unsigned short additional;
+} dns_header_t;
+
+typedef struct dns_question{
+    int length;
+    unsigned short qtype;
+    unsigned short qclass;
+    unsigned char *name;
+} dns_question_t;
+```
+
+
+
+---
+
+
+
+## 3. DNS header填充与函数实现
+
+```c
+int dns_create_header(dns_header_t *header)
+{
+    if (header == NULL)
+    {
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    memset(header, 0, sizeof(dns_header_t));
+
+    srandom(time(NULL));
+    
+    //htons函数将主机字节序转换为网络字节序
+    header->id = random() % 65536;
+    header->flags = htons(0x0100);
+    header->questions = htons(1);
+    header->answers = htons(0);
+    header->authority = htons(0);
+    header->additional = htons(0);
+    return 0;
+}
+```
+
+这边主要有两个点：
+
+- 随机数生成
+- 网络字节序转换！！！
+
+
+
+---
+
+
+
+## 4. DNS question填充与函数实现
+
+```c
+//hostname: www.0voice.com
+//FinalName: 3www60voice3com
+int dns_create_question(dns_question_t *question, const char *hostname)
+{
+    if (question == NULL || hostname == NULL)
+    {
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    memset(question, 0, sizeof(dns_question_t));
+    question->length = strlen(hostname) + 2;
+    question->name = (unsigned char *)malloc(question->length);
+    if(question->name == NULL)
+    {
+        printf("malloc() failed\n");
+        return -2;
+    }
+    question->qtype = htons(1);
+    question->qclass = htons(1);
+
+
+
+    // 1. 先将hostname分割成各个域名
+    const char delim[2] = ".";
+    char *qname = question->name; // qname指向question->name
+    char *hostname_dup = strdup(hostname);  // 复制一份hostname
+    char *token = strtok(hostname_dup, delim); // www.0voice.com
+
+    while(token != NULL)
+    {
+        size_t len = strlen(token);
+        *qname++ = len; // 先存储长度
+        strncpy((char *)qname, token, len+1); // 这边可以+1也可以不加
+        qname += len; // qname指向下一个位置
+        token = strtok(NULL, delim); // 继续分割，不需要指定了，所以这不是线程安全的，存储上次结果
+    }
+    free(hostname_dup); // 释放复制的内存
+    return 0;
+}
+```
+
+
+
+下面用中文对这段代码做详细讲解，并顺便介绍用到的标准库函数。
+
+
+
+------
+
+
+> 
+>
+> ## 1. 函数签名与参数校验
+>
+> - **函数原型**：
+>
+>   ```c
+>   int dns_create_question(dns_question_t *question,
+>                           const char *hostname);
+>   ```
+>
+>   - `question`：输出参数，指向要填充的 DNS 查询结构体。
+>   - `hostname`：点分格式的主机名，如 `"www.0voice.com"`。
+>
+> - **参数校验**：
+>
+>   ```c
+>   if (question == NULL || hostname == NULL) {
+>       printf("Invalid arguments\n");
+>       return -1;
+>   }
+>   ```
+>
+>   - `printf`：来自 `<stdio.h>`，打印错误信息到标准输出。
+>   - 返回 `-1` 表示调用者传入了空指针。
+>
+> ------
+>
+> ## 2. 清零结构体
+>
+> ```c
+> memset(question, 0, sizeof(dns_question_t));
+> ```
+>
+> - **`memset`**（在 `<string.h>` 中）：
+>   - 将给定内存区域（`question` 起始、长度 `sizeof(dns_question_t)`）全部填充为 0。
+>   - 目的是将结构体所有字段初始化为 0，避免垃圾数据。
+>
+> ------
+>
+> ## 3. 计算并分配存放 QNAME 的缓冲区
+>
+> ```c
+> question->length = strlen(hostname) + 2;
+> question->name   = (unsigned char *)malloc(question->length);
+> if (question->name == NULL) {
+>     printf("malloc() failed\n");
+>     return -2;
+> }
+> ```
+>
+> 1. **`strlen(hostname)`**（在 `<string.h>`）：返回主机名字符串长度（不包括末尾 `\0`）。
+> 2. +2：一个字节用于末尾的 0 长度标签（结束标志），另一个是安全余量。
+> 3. **`malloc`**（在 `<stdlib.h>`）：
+>    - 申请 `length` 字节的动态内存，返回 `void*`，失败时返回 `NULL`。
+>    - 这里强制转换为 `unsigned char*`，以便按字节操作。
+>
+> ------
+>
+> ## 4. 设置查询类型和类
+>
+> ```c
+> question->qtype  = htons(1);
+> question->qclass = htons(1);
+> ```
+>
+> - **`htons`**（在 `<arpa/inet.h>`）：“host to network short”，
+>   - 将 16 位整数从主机字节序转换为网络字节序（大端）。
+>   - `1` 表示 DNS A 记录（`QTYPE=A`）和 Internet 类（`QCLASS=IN`）。
+>
+> ------
+>
+> ## 5. 复制并分割主机名
+>
+> ```c
+> char *hostname_dup = strdup(hostname);
+> char *token = strtok(hostname_dup, delim);
+> ```
+>
+> - **`strdup`**（POSIX 或 `<string.h>` 扩展）：分配新内存并复制一份字符串，返回指向拷贝的指针，必须后续 `free`。
+> - **`strtok`**（在 `<string.h>`）：将字符串按指定分隔符（这里是 `"."`）分割：
+>   - 首次调用传入要分割的字符串，后续调用传 `NULL` 以继续处理同一字符串。
+>   - 会修改源字符串，将分隔符替换为 `'\0'`，并返回每次分割出的子串指针。
+>
+> ------
+>
+> ## 6. 构造 DNS 格式的 QNAME
+>
+> ```c
+> while (token != NULL) {
+>     size_t len = strlen(token);
+>     *qname++ = len;                         // 写入长度字节
+>     strncpy((char *)qname, token, len + 1); // 拷贝标签内容（含终结 '\0' 可选）
+>     qname += len;                           // 移动到下一个写入位置
+>     token = strtok(NULL, delim);
+> }
+> ```
+>
+> - **循环逻辑**：
+>
+>   1. `len = strlen(token)`：计算当前标签长度。
+>   2. `*qname++ = len;`：先写一个长度值字节（例如 `3` 表示“www”）。
+>   3. `strncpy(...)`：拷贝 `len` 个字符。加 `+1` 是为了把 C 字符串的 `\0` 一并拷过来（虽然 DNS 协议不需要这个 `\0`，但调试方便）。
+>   4. `qname += len;`：跳过刚刚写入的标签内容，准备写下一个长度字节。
+>   5. `strtok(NULL, delim)`：继续拿下一个标签。
+>
+> - **最终结果**（以 `www.0voice.com` 为例）：
+>
+>   ```
+>   [03] 'w' 'w' 'w'
+>   [06] '0' 'v' 'o' 'i' 'c' 'e'
+>   [03] 'c' 'o' 'm'
+>   [00]                ← 结束标志
+>   ```
+>
+> ------
+>
+> ## 7. 释放临时内存并返回
+>
+> ```c
+> free(hostname_dup);
+> return 0;
+> ```
+>
+> - **`free`**（在 `<stdlib.h>`）：释放之前 `strdup` 分配的堆内存。
+> - 返回 `0` 表示成功。
+>
+> ------
+>
+> ## 常用标准库函数一览
+>
+> | 函数      | 头文件               | 作用                                             |
+> | --------- | -------------------- | ------------------------------------------------ |
+> | `printf`  | `<stdio.h>`          | 格式化输出到标准输出                             |
+> | `memset`  | `<string.h>`         | 填充指定内存区域为某个字节值                     |
+> | `strlen`  | `<string.h>`         | 计算 C 字符串长度（不含末尾 `\0`）               |
+> | `malloc`  | `<stdlib.h>`         | 分配指定字节数的堆内存，返回指针或 `NULL`        |
+> | `free`    | `<stdlib.h>`         | 释放之前由 `malloc`/`strdup` 分配的内存          |
+> | `htons`   | `<arpa/inet.h>`      | 将 16 位整数从主机字节序转换为网络（大端）字节序 |
+> | `strdup`  | `<string.h>` / POSIX | 分配并复制一份字符串，返回新内存指针，需 `free`  |
+> | `strtok`  | `<string.h>`         | 按分隔符分割字符串（就地修改），逐次返回每个子串 |
+> | `strncpy` | `<string.h>`         | 拷贝固定长度字符到目标缓冲区，若源短则补 `\0`    |
+>
+> 通过这些函数，程序就能将以“点”分隔的主机名转成 DNS 协议要求的“长度前缀 + 标签”格式，并封装成一个完整的查询问题。
+
+
+
+
+
+
+
+## 5. DNS协议 UDP编程的实现
+
+需要明白，UDP是一个广播形式的包，不管对方接不接受，都一直在广播。
+
+- **能不能被接收到是不需要被保证的！！**
+
+```c
+// dns_header_t *header
+// dns_question_t *question
+// char *request
+
+int dns_build_requestion(dns_header_t *header, dns_question_t *question, char *request)
+{
+}
+
+int dns_client_commit(const char *domain)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+    {
+        printf("socket() failed\n");
+        return -1;
+    }
+    struct sockaddr_in server_addr = {0};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(DNS_SERVER_PORT);
+    server_addr.sin_addr.s_addr = inet_addr(DNS_SERVER_IP);
+
+    dns_header_t header = {0};
+    dns_create_header(&header);
+
+    dns_question_t question = {0};
+    dns_create_question(&question, domain);
+
+    char request[1024] = {0};
+
+    int length = dns_build_requestion(&header, &question, request);
+
+    sendto(fd, request, length, 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
+
+}
+
+```
+
+
+
+
+
+---
+
+
+
+
+
+## 6. DNS build_requesticon的实现
+
+```c
+// dns_header_t *header
+// dns_question_t *question
+// char *request
+
+int dns_build_requestion(dns_header_t *header, dns_question_t *question, char *request)
+{
+    if (header == NULL || question == NULL || request == NULL)
+    {
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    memset(request, 0, sizeof(request));
+
+    // header --> request
+    memcpy(request, header, sizeof(dns_header_t)); // 复制header到request
+    int offset = sizeof(dns_header_t);             // 计算偏移量
+
+    // question --> request
+    memcpy(request + offset, question->name, question->length); // 复制question到request
+    offset += question->length;                                 // 更新偏移量
+
+    memcpy(request + offset, &question->qtype, sizeof(question->qtype)); // 复制qtype到request
+    offset += sizeof(question->qtype);                                   // 更新偏移量
+
+    memcpy(request + offset, &question->qclass, sizeof(question->qclass)); // 复制qclass到request
+    offset += sizeof(question->qclass);                                    // 更新偏移量
+
+    // 计算请求的长度
+    return offset;
+}
+```
+
+
+
+
+
+补充请求发起函数内容：
+
+```c
+int dns_client_commit(const char *domain)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+    {
+        printf("socket() failed\n");
+        return -1;
+    }
+    struct sockaddr_in server_addr = {0};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(DNS_SERVER_PORT);
+    server_addr.sin_addr.s_addr = inet_addr(DNS_SERVER_IP);
+
+    connect(fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    
+    dns_header_t header = {0};
+    dns_create_header(&header);
+
+    dns_question_t question = {0};
+    dns_create_question(&question, domain);
+
+    char request[1024] = {0};
+
+    int length = dns_build_requestion(&header, &question, request);
+
+    // request
+    int slen = sendto(fd, request, length, 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    if (slen < 0)
+    {
+        printf("sendto() failed\n");
+        return -2;
+    }
+    printf("sendto() %d bytes\n%s\n", slen, request);
+
+    // recvfrom
+    char response[1024] = {0};
+    struct sockaddr_in client_addr = {0};
+
+    int n = recvfrom(fd, response, sizeof(response), 0, (struct sockaddr *)&client_addr, (socklen_t *)&slen);
+
+    if (n < 0)
+    {
+        printf("recvfrom() failed\n");
+        return -3;
+    }
+    printf("recvfrom() %d bytes\n%s\n", n, response);
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2)
+        return -1;
+    dns_client_commit(argv[1]);
+    // dns_client_commit("www.0voice.com");
+}
+
+```
+
+
+
+> UDP编程，`connect()`是需要的，
+>
+> 为我们后续的`sendto()`探探路，保证可以完整实现。
+>
+> !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+
+---
+
+
+
+## 7. DNS代码编译视频
+
+这边首先是对有个地方的低劣，就是我们的域名本省是应该要有个终止符0x00的，但是我们这边没有显式的添加，我手动添加后，就会无响应
+
+分析后：
+
+> ### 原始 `length` 是怎么算的？
+>
+> ```
+> question->length = strlen(hostname) + 2;
+> ```
+>
+> - 对于 `www.baidu.com` 来说，`strlen(hostname)`＝13
+> - `+2` 正好凑成：
+>   - **3 个标签长度字节**（`0x03`、`0x05`、`0x03`）
+>   - - **11 个标签内容字节**（“www”，“baidu”，“com”共 11 字节）
+>   - - **1 个终止 `0x00` 字节**
+>   - 总共 `3+11+1 = 15` 字节
+>
+> 也就是说，`strlen + 2` 本身就等于 `标签长度字节数 + 标签内容字节数 + 终止 0`。
+
+老师这边考虑到了终止符的问题
+
+
+
+> #### int n = recvfrom(fd, response, sizeof(response), 0, (struct  sockaddr* *)&client_addr, (*socklen_t* *)&slen);为什么要强转(struct *sockaddr* *)&client_addr
+>
+> 这边有个历史原因：
+>
+> - 编译过程中，struct *sockaddr_in* server_addr = {0};表示本地地址
+> -  sockaddr* 在网络中的话，我们需要用这个来表示地址，所以需要强转
+
+
+
+
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <sys/socket.h>
+#include <time.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+#define DNS_SERVER_PORT 53
+#define DNS_SERVER_IP   "114.114.114.114"
+
+#define DNS_HOST  0x01
+#define DNS_CNAME 0x05
+
+/**
+ * DNS 报文头结构体
+ */
+typedef struct dns_header
+{
+    unsigned short id;         ///< 报文标识
+    unsigned short flags;      ///< 标志位
+    unsigned short questions;  ///< 问题数
+    unsigned short answers;    ///< 回答数
+    unsigned short authority;  ///< 授权记录数
+    unsigned short additional; ///< 附加记录数
+} dns_header_t;
+
+typedef struct dns_question
+{
+    int length;           ///< 域名部分长度（字节数）
+    unsigned short qtype; ///< 查询类型
+    unsigned short qclass;///< 查询类
+    unsigned char *name;  ///< 查询的域名（以 DNS 格式存储）
+} dns_question_t;
+
+typedef struct dns_item
+{
+    char *domain; ///< 解析到的域名
+    char *ip;     ///< 对应 IP 地址
+} dns_item_t;
+
+/**
+ * @brief 初始化 DNS 报文头
+ * @param[out] header 指向待初始化的 dns_header_t 结构
+ * @return 0 成功；-1 参数无效
+ */
+int dns_create_header(dns_header_t *header)
+{
+    if (header == NULL)
+    {
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    memset(header, 0, sizeof(dns_header_t));
+
+    srandom(time(NULL));
+    header->id        = random() % 65536;  // 随机事务 ID
+    header->flags     = htons(0x0100);     // 标准查询
+    header->questions = htons(1);          // 一个问题
+    header->answers   = htons(0);
+    header->authority = htons(0);
+    header->additional= htons(0);
+    return 0;
+}
+
+/**
+ * @brief 构造 DNS 查询部分
+ * @param[out] question 指向待填充的 dns_question_t 结构
+ * @param[in] hostname 要查询的主机名（如 "www.example.com"）
+ * @return 0 成功；-1 参数无效；-2 内存分配失败
+ */
+int dns_create_question(dns_question_t *question, const char *hostname)
+{
+    if (question == NULL || hostname == NULL)
+    {
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    memset(question, 0, sizeof(dns_question_t));
+    question->length = strlen(hostname) + 2;
+    question->name   = (unsigned char *)malloc(question->length);
+    if (question->name == NULL)
+    {
+        printf("malloc() failed\n");
+        return -2;
+    }
+    question->qtype  = htons(1);  // A 记录
+    question->qclass = htons(1);  // IN 类
+
+    const char delim[2] = ".";
+    unsigned char *qname = question->name;
+    char *hostname_dup = strdup(hostname);
+    char *token = strtok(hostname_dup, delim);
+
+    while (token != NULL)
+    {
+        size_t len = strlen(token);
+        *qname++ = len;                       // 标签长度
+        strncpy((char *)qname, token, len);   // 复制标签内容
+        qname += len;
+        token = strtok(NULL, delim);
+    }
+    free(hostname_dup);
+    return 0;
+}
+
+/**
+ * @brief 构建整个 DNS 请求报文
+ * @param[in] header 已填充的报文头
+ * @param[in] question 已填充的查询段
+ * @param[out] request 输出缓冲区，用于存放完整请求
+ * @return 请求长度（字节数）；-1 参数无效
+ */
+int dns_build_requestion(dns_header_t *header, dns_question_t *question, char *request)
+{
+    if (header == NULL || question == NULL || request == NULL)
+    {
+        printf("Invalid arguments\n");
+        return -1;
+    }
+    memset(request, 0, sizeof(request));
+
+    memcpy(request, header, sizeof(dns_header_t));
+    int offset = sizeof(dns_header_t);
+
+    memcpy(request + offset, question->name, question->length);
+    offset += question->length;
+
+    memcpy(request + offset, &question->qtype, sizeof(question->qtype));
+    offset += sizeof(question->qtype);
+
+    memcpy(request + offset, &question->qclass, sizeof(question->qclass));
+    offset += sizeof(question->qclass);
+
+    return offset;
+}
+
+/**
+ * @brief 判断当前字节是否为指针标志
+ * @param[in] in 当前字节
+ * @return 非零表示是指针
+ */
+static int is_pointer(int in)
+{
+    return ((in & 0xC0) == 0xC0);
+}
+
+/**
+ * @brief 递归解析 DNS 名称（处理指针压缩）
+ * @param[in] chunk DNS 报文起始地址
+ * @param[in] ptr 指向当前名称部分
+ * @param[out] out 输出缓冲区，存放解析后的名称
+ * @param[in,out] len 已解析长度
+ */
+static void dns_parse_name(unsigned char *chunk, unsigned char *ptr, char *out, int *len)
+{
+    int flag = 0, n = 0;
+    char *pos = out + (*len);
+
+    while (1)
+    {
+        flag = ptr[0];
+        if (flag == 0) break;
+
+        if (is_pointer(flag))
+        {
+            n = ptr[1];
+            ptr = chunk + n;
+            dns_parse_name(chunk, ptr, out, len);
+            break;
+        }
+        else
+        {
+            ptr++;
+            memcpy(pos, ptr, flag);
+            pos += flag;
+            ptr += flag;
+            *len += flag;
+            if (ptr[0] != 0)
+            {
+                *pos++ = '.';
+                (*len)++;
+            }
+        }
+    }
+}
+
+/**
+ * @brief 解析 DNS 响应报文中的 Answer 部分
+ * @param[in] buffer 接收到的原始报文
+ * @param[out] domains 返回动态分配的 dns_item_t 数组
+ * @return 解析到的记录数；-1 分配失败
+ */
+static int dns_parse_response(unsigned char *buffer, struct dns_item **domains)
+{
+    unsigned char *ptr = buffer;
+    ptr += 4;
+    int querys  = ntohs(*(unsigned short *)ptr);
+    ptr += 2;
+    int answers = ntohs(*(unsigned short *)ptr);
+    ptr += 6;
+
+    // 跳过 question 段
+    for (int i = 0; i < querys; i++)
+    {
+        while (*ptr != 0) ptr += (*ptr + 1);
+        ptr += 5;
+    }
+
+    struct dns_item *list = calloc(answers, sizeof(struct dns_item));
+    if (!list) return -1;
+
+    int cnt = 0;
+    for (int i = 0; i < answers; i++)
+    {
+        char aname[128] = {0}, ip[20] = {0}, netip[4];
+        int len = 0, type, ttl, datalen;
+
+        dns_parse_name(buffer, ptr, aname, &len);
+        ptr += 2;
+
+        type = htons(*(unsigned short *)ptr);
+        ptr += 4;
+        ttl  = htons(*(unsigned short *)ptr);
+        ptr += 4;
+        datalen = ntohs(*(unsigned short *)ptr);
+        ptr += 2;
+
+        if (type == DNS_CNAME)
+        {
+            char cname[128] = {0};
+            len = 0;
+            dns_parse_name(buffer, ptr, cname, &len);
+            ptr += datalen;
+        }
+        else if (type == DNS_HOST && datalen == 4)
+        {
+            memcpy(netip, ptr, datalen);
+            inet_ntop(AF_INET, netip, ip, sizeof(ip));
+            printf("%s has address %s\n", aname, ip);
+            printf("\tTime to live: %d minutes , %d seconds\n", ttl/60, ttl%60);
+
+            list[cnt].domain = strdup(aname);
+            list[cnt].ip     = strdup(ip);
+            cnt++;
+            ptr += datalen;
+        }
+    }
+
+    *domains = list;
+    return cnt;
+}
+
+/**
+ * @brief 执行一次 DNS 查询并打印结果
+ * @param[in] domain 要查询的域名
+ * @return 0 成功；-1~其他 失败
+ */
+int dns_client_commit(const char *domain)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) { printf("socket() failed\n"); return -1; }
+
+    struct sockaddr_in server_addr = {0};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port   = htons(DNS_SERVER_PORT);
+    server_addr.sin_addr.s_addr = inet_addr(DNS_SERVER_IP);
+
+    connect(fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+
+    dns_header_t header  = {0};
+    dns_create_header(&header);
+
+    dns_question_t question = {0};
+    dns_create_question(&question, domain);
+
+    char request[1024] = {0};
+    int length = dns_build_requestion(&header, &question, request);
+
+    int slen = sendto(fd, request, length, 0,
+                      (struct sockaddr *)&server_addr, sizeof(server_addr));
+    if (slen < 0) { printf("sendto() failed\n"); return -2; }
+    printf("sendto() %d bytes\n", slen);
+
+    char response[1024] = {0};
+    int n = recvfrom(fd, response, sizeof(response), 0, NULL, NULL);
+    if (n < 0) { printf("recvfrom() failed\n"); return -3; }
+    printf("recvfrom() %d bytes\n", n);
+
+    struct dns_item *domains = NULL;
+    int cnt = dns_parse_response((unsigned char *)response, &domains);
+    if (cnt < 0) { printf("dns_parse_response() failed\n"); return -4; }
+
+    printf("cnt = %d\n", cnt);
+    return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2) return -1;
+    dns_client_commit(argv[1]);
+}
+
+```
+
+最终编译成功，可以接收，输出结果
+
+
+
+---
+
+
+
+## 8. DNS运行调试，DNS Response协议解析
+
+补充一个解析流程：
+
+```c
+见上文！！！！
+```
+
+
+
+---
+
+
+
+> ### **这边我们接收到的数据实际上跟我们直接调用命令行查询还是不一样的，**
+>
+> ```bash
+> zhenxing@ubuntu:~/share/06_DNS$ ./dns  www.baidu.com
+> sendto() 31 bytes
+> 6410010000003777777562616964753636f6d00101
+> wwwbaiducom
+> recvfrom() 90 bytes
+> www.a.shifen.com has address 180.101.49.44
+>         Time to live: 0 minutes , 0 seconds
+> www.a.shifen.com has address 180.101.51.73
+>         Time to live: 0 minutes , 0 seconds
+> cnt = 2
+> ```
+>
+> 这边我们受限于我们的qtype是1，也就是只接收ipv4的协议地址，所以接收不到ipv6的地址，所以说解析出来的不全，这点需要考虑考虑
+
+
+
+
+
+> ### 总结UDP编程好处！！与TCP相比
+>
+> 1. UDP的传输速度快，例如迅雷下载的时候，对网络带宽没有限制
+> 2. UDP的响应速度快，这个不需要三四握手
+
+
+
