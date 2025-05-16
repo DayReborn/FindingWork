@@ -6229,6 +6229,364 @@ zhenxing@ubuntu:~/share/07_http$ ./http api.seniverse.com/v3/weather/now.json?ke
 
 
 
+# TCP服务器 
+
+## 1. TCP服务器的介绍
+
+> **TCP的服务器**
+>
+> 1. **基础部门，网络编程**
+> 2. **并发服务器，**
+>    - **一请求一线程**
+>    - **IO多路复用，epoll**
+
+
+
+
+
+---
+
+
+
+## 2. TCP并发网络网络编程 一请求一线程
+
+整体来说，我们需要一个listen进行监听（迎宾），然后再构建其他的通信的线程
+
+![image-20250516145145283](studynotes/image-20250516145145283.png)
+
+具体代码实现如下：
+
+```c
+
+#define BUFFER_LENGTH 1024
+
+
+void *client_routine(void* arg){
+    int clientfd = *(int *)arg;
+    while(1){
+        char buffer[BUFFER_LENGTH] = {0};
+        int len = recv(clientfd, buffer, BUFFER_LENGTH, 0); // 接收数据
+        if(len <0){
+            // 在阻塞的IO当中不会存在下面的情况
+            // if(errno == EAGAIN || errno == EWOULDBLOCK){
+            //     printf("recv timeout\n");
+            // }
+            close(clientfd);
+            break;
+        }else if(len == 0){
+            printf("client close\n");
+            close(clientfd);
+            break;
+        }else{
+            printf("recv: %d, bytes: %s\n", len, buffer);
+            send(clientfd, buffer, len, 0); // 回送数据
+        }
+    }
+    close(clientfd);
+    printf("client thread exit\n");
+    pthread_exit(NULL); // 退出线程
+    return NULL;
+}
+
+
+int main(int argc, char*argv[]){
+    if(argc < 2){
+        printf("Param Error!\n");
+        return -1;
+    }
+    int port = atoi(argv[1]);
+
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(struct sockaddr_in));
+    addr.sin_family = AF_INET; // IPv4
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY; // 绑定到所有可用的地址
+
+    if(bind(sockfd, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0){
+        perror("bind");
+        return -2;
+    }
+
+    if(listen(sockfd, 5)<0)
+    {
+        perror("listen");
+        return -3;
+    } // 监听队列长度为5
+
+    while(1){
+        struct sockaddr_in client_addr;
+        memset(&client_addr, 0, sizeof(struct sockaddr_in));
+        socklen_t addr_len = sizeof(struct sockaddr_in);
+
+        int clientfd = accept(sockfd, (struct sockaddr*)&client_addr, &addr_len); // 阻塞等待连接
+        pthread_t thead_id;
+        pthread_create(&thead_id, NULL, client_routine, &clientfd); // 创建线程处理连接
+    }
+    getchar();
+    close(sockfd);
+    printf("server exit\n");
+    return 0;
+}
+```
+
+
+
+
+
+
+
+---
+
+
+
+## 3. 并发网络编程调试与运行
+
+```bash
+zhenxing@ubuntu:~/share/08_tcp_server$ ./tcp_server 4646
+client 4 thread start
+client 5 thread start
+recv: [CLIENT 2] Test 2!, bytes: 18
+recv: [CLIENT 1] Test 1!, bytes: 18
+client close
+client 5 thread exit
+client close
+client 4 thread exit
+```
+
+
+
+> 多个客户端，如何区分哪个客户端发送的？？
+> 	sockfd解决不了的。
+> 	需要我们自己定义应用协议
+
+
+
+我们之前使用的是一用户一线程的方式，这是不行的，这种方式有几种缺点
+
+> 首先我们要分析为什么不使用多线程的方法。
+>
+> > 创建多线程的话，假设一个线程消耗8M内存，有1w个客户端同时进行连接，我们消耗的缓冲区就已经是80G了，这显然是不可以接受的!
+>
+> 那我们可以使用一个线程的方式来解决问题吗？
+>
+> ==可以！使用select、poll、epoll！==
+
+
+
+
+
+---
+
+
+
+## 4. TCP并发网络编程io多路复用epoll 水平触发与边沿触发
+
+![image-20250517012005101](studynotes/image-20250517012005101.png)
+
+
+
+> * 首先时epll的组成如下：
+>
+>   * epoll_create();
+>   * epoll_ctl();
+>   * epoll_wait();
+> * 第二点就是epoll并没有使用到mmap技术！！！
+
+![image-20250517014837807](studynotes/image-20250517014837807.png)
+
+
+
+
+
+
+
+
+
+
+
+---
+
+
+
+## 5. 并发网络编程调试与程序运行
+
+```c
+#include <stdio.h>  // 标准输入输出函数
+#include <string.h> // 字符串操作函数
+#include <stdlib.h> // 标准库函数
+
+#include <unistd.h> // UNIX标准函数（如read、write、close）
+#include <errno.h>  // 错误码定义（如errno）
+#include <fcntl.h>  // 文件控制相关函数和数据结构
+
+#include <sys/socket.h>  // 套接套接字操作相关函数和数据结构
+#include <netinet/in.h>  // IPv4地址结构sockaddr_in定义
+#include <netinet/tcp.h> // TCP协议相关函数和数据结构
+#include <arpa/inet.h>   // inet_pton函数
+#include <pthread.h>     // 线程相关函数和数据结构
+#include <sys/epoll.h>   // epoll相关函数和数据结构
+
+#define BUFFER_LENGTH 1024
+#define EPOLL_SIZE 1024
+
+
+
+
+void *client_routine(void *arg)
+{
+    int clientfd = *(int *)arg;
+    printf("client %d thread start\n", clientfd);
+    while (1)
+    {
+        char buffer[BUFFER_LENGTH] = {0};
+        int len = recv(clientfd, buffer, BUFFER_LENGTH, 0); // 接收数据
+        if (len < 0)
+        {
+            // 在阻塞的IO当中不会存在下面的情况
+            // if(errno == EAGAIN || errno == EWOULDBLOCK){
+            //     printf("recv timeout\n");
+            // }
+            close(clientfd);
+            break;
+        }
+        else if (len == 0)
+        {
+            printf("client close\n");
+            close(clientfd);
+            break;
+        }
+        else
+        {
+            printf("recv: %s, bytes: %d\n", buffer, len);
+            send(clientfd, buffer, len, 0); // 回送数据
+        }
+    }
+    printf("client %d thread exit\n", clientfd);
+    close(clientfd);
+    pthread_exit(NULL); // 线程退出
+    return NULL;
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2)
+    {
+        printf("Param Error!\n");
+        return -1;
+    }
+    int port = atoi(argv[1]);
+
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(struct sockaddr_in));
+    addr.sin_family = AF_INET; // IPv4
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY; // 绑定到所有可用的地址
+
+    if (bind(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in)) < 0)
+    {
+        perror("bind");
+        return -2;
+    }
+
+    if (listen(sockfd, 5) < 0)
+    {
+        perror("listen");
+        return -3;
+    } // 监听队列长度为5
+
+#if 0
+    while (1)
+    {
+        struct sockaddr_in client_addr;
+        memset(&client_addr, 0, sizeof(struct sockaddr_in));
+        socklen_t addr_len = sizeof(struct sockaddr_in);
+
+        int clientfd = accept(sockfd, (struct sockaddr *)&client_addr, &addr_len); // 阻塞等待连接
+        pthread_t thead_id;
+        pthread_create(&thead_id, NULL, client_routine, &clientfd); // 创建线程处理连接
+    }
+
+    return 0;
+
+#elif 1
+    int epfd = epoll_create(1);
+    struct epoll_event events[EPOLL_SIZE] = {0};
+    struct epoll_event ev;
+    ev.events = EPOLLIN; // 读事件
+    ev.data.fd = sockfd; // 监听套接字
+    epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev); // 添加监听套接字到epoll
+
+    while(1){
+        int nready = epoll_wait(epfd, events, EPOLL_SIZE, -1); // 等待事件发生
+        // 这边-1表示阻塞等待
+        // 如果设置为5表示超时5秒，最终返回-1
+        int i = 0;
+        for(i = 0; i<nready;++i){
+            if(events->data.fd == sockfd){
+                struct sockaddr_in client_addr;
+                memset(&client_addr, 0, sizeof(struct sockaddr_in));
+                socklen_t addr_len = sizeof(struct sockaddr_in);
+                int clientfd = accept(sockfd, (struct sockaddr *)&client_addr, &addr_len); // 阻塞等待连接
+                ev.events = EPOLLIN; // 读事件
+                ev.data.fd = clientfd; // 客户端套接字
+                epoll_ctl(epfd, EPOLL_CTL_ADD, clientfd, &ev); // 添加客户端套接字到epoll
+            }else{
+                int clientfd = events[i].data.fd;
+                char buffer[BUFFER_LENGTH] = {0};
+                int len = recv(clientfd, buffer, BUFFER_LENGTH, 0); // 接收数据
+                if (len < 0)
+                {  
+                    close(clientfd);
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, clientfd, NULL); // 删除客户端套接字
+
+                    break;
+                }
+                else if (len == 0)
+                {
+                    printf("client close\n");
+                    close(clientfd);
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, clientfd, NULL); // 删除客户端套接字
+                    break;
+                }
+                else
+                {
+                    printf("recv: %s, bytes: %d\n", buffer, len);
+                    send(clientfd, buffer, len, 0); // 回送数据
+                }
+            }   
+
+        }
+    }
+
+#endif
+
+}
+```
+
+
+
+避免使用多线程，同样实现同样的功能。
+
+
+
+
+
+
+
+
+
+
+
+---
+
+
+
+
+
 
 
 
