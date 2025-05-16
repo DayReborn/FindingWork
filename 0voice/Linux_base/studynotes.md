@@ -5335,11 +5335,7 @@ int main(int argc, char *argv[])
 #include <stdlib.h>
 #include <string.h>
 
-#include <sys/socket.h>
-#include <time.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <unistd.h>
+
 
 #define DNS_SERVER_PORT 53
 #define DNS_SERVER_IP   "114.114.114.114"
@@ -5685,6 +5681,639 @@ int main(int argc, char *argv[])
 >
 > 1. UDP的传输速度快，例如迅雷下载的时候，对网络带宽没有限制
 > 2. UDP的响应速度快，这个不需要三四握手
+
+
+
+
+
+---
+
+
+
+# http客户端请求 (6小节)
+
+## 1. http项目介绍与Http协议讲解
+
+![image-20250515160132461](studynotes/image-20250515160132461.png)
+
+
+
+请求如下：
+
+```http
+GET /hello.txt HTTP/1.1
+User-Agent: curl/7.16.3 libcurl/7.16.3 OpenSSL/0.9.7l zlib/1.2.3
+Host: www.example.com
+Accept-Language: en, mi
+```
+
+
+
+对应数据格式：
+
+![image-20250515161339995](studynotes/image-20250515161339995.png)
+
+
+
+这里面都是http的请求字段：
+
+![image-20250515161310852](studynotes/image-20250515161310852.png)
+
+
+
+这边请求头的字段名根据自己的需求来选择需要什么
+
+
+
+---
+
+
+
+服务器响应：
+
+```http
+HTTP/1.1 200 OK
+Date: Mon, 27 Jul 2009 12:28:53 GMT
+Server: Apache
+Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT
+ETag: "34aa387-d-1568eb00"
+Accept-Ranges: bytes
+Content-Length: 51
+Vary: Accept-Encoding
+Content-Type: text/plain
+```
+
+
+
+输出结果：
+
+```http
+Hello World! My payload includes a trailing CRLF
+```
+
+
+
+---
+
+
+
+## 2. http项目，hostname转换ip
+
+写第一个函数：
+
+```c
+char *host_to_ip(const char *hostname){
+    // 这个实际上就是实现dns解析
+    struct hostent *host_entry = gethostbyname(hostname);
+    
+    // * 点分十进制：14.215.177.39 --> unsigned int来进行表示
+    // * inet_ntoa((struct in_addr*) --> char*来进行表示
+    // * 0x12121212 --> 18.18.18.18
+    if(host_entry != NULL){
+        return inet_ntoa(*(struct in_addr*)*host_entry->h_addr_list);
+    }
+    return NULL;
+}
+```
+
+
+
+
+
+
+
+---
+
+
+
+## 3. http项目tcp socket链接
+
+![image-20250515224200903](studynotes/image-20250515224200903.png)
+
+```c
+int http_create_socket(char *ip)
+{
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    struct sockaddr_in sin = {0};
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(80);
+    sin.sin_addr.s_addr = inet_addr(ip);
+
+    if(0!=connect(sockfd, (struct sockaddr *)&sin, sizeof(struct sockaddr_in))){
+        perror("connect");
+        close(sockfd);
+        return -1;
+    }
+    fcntl(sockfd, F_SETFL, O_NONBLOCK);
+}
+```
+
+
+
+> ## 1. `socket(AF_INET, SOCK_STREAM, 0)`
+>
+> - **功能**：创建一个新的网络套接字（socket），用于后续的网络通信。
+> - **参数**：
+>   - `AF_INET`：地址族（Address Family）——IPv4 网络协议。
+>   - `SOCK_STREAM`：套接字类型——面向连接、可靠的 TCP 流。
+>   - `0`：协议编号，通常填 0 让系统自动选择与 `SOCK_STREcAM` 对应的 TCP 协议。
+> - **返回值**：成功时返回一个非负的文件描述符（socket 描述符）；失败时返回 -1，并设置 `errno`。
+> - **新手提示**：套接字本质上就是一个文件描述符，可以用来读写，就像操作文件一样。
+>
+> ```c
+> int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+> ```
+>
+> ------
+>
+> ## 2. `struct sockaddr_in sin = {0};`
+>
+> - **功能**：定义并初始化一个 IPv4 地址结构体，用来保存对方服务器的 IP 和端口。
+> - **细节**：
+>   - `sockaddr_in` 是专门用于 IPv4 的地址结构，包含 `sin_family`、`sin_port`、`sin_addr` 等字段。
+>   - `= {0}` 会将结构体所有字段清零，等价于 `memset(&sin, 0, sizeof(sin));`。
+>
+> ------
+>
+> ## 3. `sin.sin_family = AF_INET;`
+>
+> - **功能**：设置地址族，与 `socket()` 中的 `AF_INET` 一致，表示这是一个 IPv4 地址。
+>
+> ------
+>
+> ## 4. `sin.sin_port = htons(80);`
+>
+> - **功能**：设置目标端口号，这里是 HTTP 默认端口 80。
+> - **`htons`**：Host TO Network Short，主机字节序（Little Endian）转网络字节序（Big Endian）。网络通信统一使用大端，确保不同机器间不出错。
+>
+> ------
+>
+> ## 5. `sin.sin_addr.s_addr = inet_addr(ip);`
+>
+> - **功能**：将点分十进制的 IP 字符串（如 `"192.168.1.1"`）转换为 32 位网络字节序整数，并赋给 `sin_addr.s_addr`。
+> - **`inet_addr`**：早期的 IP 地址转换函数，返回值为 `in_addr_t`。如果输入非法，返回 `INADDR_NONE`（= 0xFFFFFFFF）。
+>
+> > **提示**：现代代码推荐用更安全的 `inet_pton(AF_INET, ip, &sin.sin_addr)`，它支持更多错误检查。
+>
+> ------
+>
+> ## 6. `connect(sockfd, (struct sockaddr *)&sin, sizeof(struct sockaddr_in))`
+>
+> - **功能**：向远端服务器发起 TCP 三次握手，建立连接。
+> - **参数**：
+>   - `sockfd`：第一步创建的套接字描述符。
+>   - `(struct sockaddr *)&sin`：目标地址的指针，需要强制转换为通用的 `struct sockaddr *`。
+>   - `sizeof(struct sockaddr_in)`：地址结构的大小。
+> - **返回值**：成功返回 0；失败返回 -1 并设置 `errno`。
+>
+> ```c
+> if (0 != connect(...)) {
+>     // 失败处理
+> }
+> ```
+>
+> ------
+>
+> ## 7. `perror("connect");`
+>
+> - **功能**：打印出错信息到标准错误（stderr），格式为 `connect: <错误描述>`，根据全局 `errno` 给出具体原因（如 “Connection refused”、“No route to host” 等）。
+> - **常见用法**：在系统调用失败后立即调用，以便调试。
+>
+> ------
+>
+> ## 8. `close(sockfd);`
+>
+> - **功能**：关闭套接字描述符，释放内核资源。
+> - **为什么要关？**：如果连接失败，就不再使用这个描述符，必须及时关闭以免资源泄露。
+>
+> ------
+>
+> ## 9. `return -1;`
+>
+> - **功能**：函数返回错误码 `-1` 给调用者，表示创建或连接失败。
+>
+> ------
+>
+> ## 10. `fcntl(sockfd, F_SETFL, O_NONBLOCK);`
+>
+> - **功能**：改变文件描述符的属性，把套接字设置为非阻塞模式（non-blocking）。
+> - **参数**：
+>   - `sockfd`：要操作的文件描述符。
+>   - `F_SETFL`：命令，设置文件状态标志（file status flags）。
+>   - `O_NONBLOCK`：新的标志，表示非阻塞读写。
+> - **效果**：后续对 `sockfd` 的 `read`/`write`/`connect` 等调用，如果无法立即完成就会立即返回 `-1` 并将 `errno` 设为 `EAGAIN` 或 `EWOULDBLOCK`，而不是阻塞等待。
+
+
+
+---
+
+
+
+## 4. http项目 send http请求
+
+![image-20250516022407226](studynotes/image-20250516022407226.png)
+
+```c
+int http_send_request(const char *hostname, const char *resource){
+    char* ip = host_to_ip(hostname);
+    int sockfd = http_create_socket(ip);
+    if(sockfd < 0){
+        return -1;
+    }
+    char buffer[BUFFER_SIZE] = {0};
+    sprintf(buffer,
+        "GET %s %s\r\nHost: %s\r\n",
+        resource,HTTP_VERSION,
+        hostname,CONNECTION_TYPE
+    );
+
+    send(sockfd, buffer, strlen(buffer), 0);
+
+}
+```
+
+
+
+形象举例子：
+
+![image-20250516032015599](studynotes/image-20250516032015599.png)
+
+
+
+
+
+
+
+
+
+---
+
+
+
+## 5. http项目 select使用讲解与http response接收
+
+> **select检测，网络io里面有没有可读的数据**
+
+```c
+    // select
+    fd_set fdread;
+    FD_ZERO(&fdread);
+    FD_SET(sockfd, &fdread);
+
+    struct timeval tv;
+
+    tv.tv_sec = 5;
+    tv.tv_usec = 0;
+
+    char *result = malloc(sizeof(int));
+    memset(result, 0, sizeof(int));
+    while (1)
+    {
+        int selection = select(sockfd + 1, &fdread, NULL, NULL, &tv);
+        if (!selection || !FD_ISSET(sockfd, &fdread))
+        {
+            printf("timeout\n");
+            break;
+        }
+        else
+        {
+            memset(buffer, 0, BUFFER_SIZE);
+            int len = recv(sockfd, buffer, BUFFER_SIZE, 0);
+            if(len ==0){
+                break;
+            }
+            result = realloc(result, (strlen(result) + len + 1)*sizeof(char));
+            strncat(result,buffer, len);
+        }
+    }c
+    close(sockfd);
+    return result;
+}
+
+int main(int argc,char*argv[]){
+    if (argc<3)return -1;
+    char *response =http_send_request(argv[1],argv[2]);
+    printf("response :%s\n",response);
+    free(response);
+}
+```
+
+
+
+
+
+
+
+
+
+---
+
+
+
+## 6. http项目编译调试，网页请求与API接口请求
+
+加备注的完整代码如下：
+
+``` c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <sys/socket.h>
+#include <time.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+#include <netdb.h>
+#include <fcntl.h>
+
+#define HTTP_VERSION "HTTP/1.1"
+#define CONNECTION_TYPE "Connection: close\r\n"
+
+#define BUFFER_SIZE 4096
+
+/**
+ * @brief 将主机名解析为点分十进制 IP 字符串
+ *
+ * 通过 gethostbyname() 实现 DNS 解析，将返回的网络字节序地址
+ * 转换成可读的点分十进制字符串。
+ *
+ * @param hostname 要解析的主机名（如 "www.example.com"）
+ * @return 成功时返回静态缓冲区中的 IP 字符串（如 "93.184.216.34"），
+ *         失败时返回 NULL
+ */
+char *host_to_ip(const char *hostname)
+{
+    struct hostent *host_entry = gethostbyname(hostname);
+    if (host_entry != NULL)
+    {
+        return inet_ntoa(*(struct in_addr *)*host_entry->h_addr_list);
+    }
+    return NULL;
+}
+
+/**
+ * @brief 创建一个与指定 IP、端口 80 的 TCP 非阻塞 socket 并连接
+ *
+ * @param ip 点分十进制的 IP 地址字符串
+ * @return 成功时返回 socket 描述符，失败时返回 -1
+ */
+int http_create_socket(char *ip)
+{
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    struct sockaddr_in sin = {0};
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(80);
+    sin.sin_addr.s_addr = inet_addr(ip);
+
+    if (0 != connect(sockfd, (struct sockaddr *)&sin, sizeof(struct sockaddr_in)))
+    {
+        perror("connect");
+        close(sockfd);
+        return -1;
+    }
+    // 设置为非阻塞模式
+    fcntl(sockfd, F_SETFL, O_NONBLOCK);
+    return sockfd;
+}
+
+/**
+ * @brief 向指定主机和资源发送 HTTP GET 请求并接收完整响应
+ *
+ * @param hostname 目标主机名（用于 Host 头）
+ * @param resource 要请求的资源路径（如 "/index.html"）
+ * @return 返回包含 HTTP 响应的完整字符串，调用者需 free()；失败时返回 NULL
+ */
+char * http_send_request(const char *hostname, const char *resource)
+{
+    char *ip = host_to_ip(hostname);
+    int sockfd = http_create_socket(ip);
+    if (sockfd < 0)
+    {
+        return NULL;
+    }
+
+    char buffer[BUFFER_SIZE] = {0};
+    // 构造 GET 请求报文
+    sprintf(buffer,
+            "GET %s %s\r\n"
+            "Host: %s\r\n"
+            "Connection: %s\r\n\r\n",
+            resource, HTTP_VERSION,
+            hostname, CONNECTION_TYPE);
+
+    send(sockfd, buffer, strlen(buffer), 0);
+
+    // 使用 select 等待可读
+    fd_set fdread;
+    FD_ZERO(&fdread);
+    FD_SET(sockfd, &fdread);
+
+    struct timeval tv;
+    tv.tv_sec = 5;    /**< 等待最久 5 秒 */
+    tv.tv_usec = 0;
+
+    // 初始分配少量空间
+    char *result = malloc(sizeof(int));
+    memset(result, 0, sizeof(int));
+
+    while (1)
+    {
+        int selection = select(sockfd + 1, &fdread, NULL, NULL, &tv);
+        if (!selection || !FD_ISSET(sockfd, &fdread))
+        {
+            printf("timeout\n");
+            break;
+        }
+        else
+        {
+            memset(buffer, 0, BUFFER_SIZE);
+            int len = recv(sockfd, buffer, BUFFER_SIZE, 0);
+            if (len == 0)
+            {
+                // 对端关闭
+                break;
+            }
+            // 扩展缓冲区并追加
+            result = realloc(result, (strlen(result) + len + 1) * sizeof(char));
+            strncat(result, buffer, len);
+        }
+    }
+    close(sockfd);
+    return result;
+}
+
+/**
+ * @brief 程序入口
+ *
+ * @param argc 参数个数，至少 3（程序名、主机名、资源路径）
+ * @param argv 参数数组，argv[1]=hostname，argv[2]=resource
+ * @return 成功返回 0，失败返回 -1
+ */
+int main(int argc, char *argv[])
+{
+    if (argc < 3)
+        return -1;
+
+    char *response = http_send_request(argv[1], argv[2]);
+    printf("response :%s\n", response);
+    free(response);
+    return 0;
+}
+
+```
+
+
+
+最终结果：
+
+```bash
+zhenxing@ubuntu:~/share/07_http$ ./http www.baidu.com /
+```
+
+
+
+```mermaid
+flowchart TD
+    A[程序启动: main] --> B{参数合法?}
+    B -- 否 --> C[return -1, 退出]
+    B -- 是 --> D[调用 http_send_request]
+    D --> E[host_to_ip]
+    E -->|解析成功| F[http_create_socket]
+    E -->|解析失败| C
+    F -->|连接成功| G[构造 HTTP GET 请求]
+    F -->|失败| C
+    G --> H[send]
+    H --> I[初始化 select & timeout]
+    I --> J{select 可读?}
+    J -- 否 --> K[打印 timeout, 跳出循环]
+    J -- 是 --> L[recv]
+    L -->|len>0| M[realloc 并拼接 数据]
+    L -->|len==0| N[对端关闭, 跳出循环]
+    M --> I
+    K --> O[close]
+    N --> O
+    O --> P[返回完整响应字符串]
+    P --> Q[在 main 中打印 response]
+    Q --> R[free并退出]
+
+```
+
+
+
+调用网上的api接口：
+
+```bash
+zhenxing@ubuntu:~/share/07_http$ ./http api.seniverse.com/v3/weather/now.json?key=your_private_key&location=beijing&language=zh-Hans&unit=c
+[1]+  Exit 127                r_private_key
+[1] 97074
+[2] 97075
+[3] 97076
+[1]   Exit 255                ./http api.seniverse.com/v3/weather/now.json?key=your_private_key
+[2]-  Done                    location=beijing
+[3]+  Done                    language=zh-Hans
+```
+
+
+
+
+
+
+
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
