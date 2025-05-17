@@ -6575,6 +6575,23 @@ int main(int argc, char *argv[])
 
 
 
+---
+
+
+
+# 百万并发的服务器
+
+## 1. 百万并发项目介绍与并发概念讲解
+
+> 在我们已经写好的tcp_server.c，并发量100万。
+> 一秒钟处理的请求数量，qps
+
+
+
+> 准备好4个虚拟机
+> 其中-个4G内存，2核cpu --> Server
+> 另外三个2G内存，1核cpu --> Client
+
 
 
 
@@ -6582,6 +6599,284 @@ int main(int argc, char *argv[])
 
 
 ---
+
+
+
+## 2. 百万并发 connection refused问题解决
+
+> 这边，每个进程默认只有1024个io可以创建
+>
+> ![image-20250517032315385](studynotes/image-20250517032315385.png)
+
+
+
+
+
+所以要先修改open files的值
+
+```bash
+ulimit -n 1048576
+```
+
+==这种修改是临时修改，一重启就丢失！！！！==
+
+
+
+> 如果要修改完整的话：
+>
+> 修改文件
+>
+> ![image-20250517032946314](studynotes/image-20250517032946314.png)
+>
+> ![image-20250517032839069](studynotes/image-20250517032839069.png)
+
+
+
+
+
+---
+
+
+
+
+
+## 3. 百万并发 request address问题分析与解决
+
+> ```
+> connect: Cannot assign requested address
+> error: Cannot assign requested address
+> ```
+>
+> 是客户端地址，服务端地址
+> sockfd-->网络地址之间有什么关系？
+> socket与ip地址有什么关系？
+
+
+
+其实我们的发送过程就是先找`五元数据`，然后根据这个五元数据进行发送。
+
+![image-20250517034142461](studynotes/image-20250517034142461.png)
+
+接收过程则是相反，
+
+整体的五元组就是一一对应的。
+
+
+
+
+
+---
+
+
+
+
+
+## 4. 百万并发 request address解决方案的实现
+
+可以使用100个端口同时监听来实现百万并发！！！
+
+
+
+
+
+---
+
+
+
+
+
+## 5. 百万并发 nf_conntrack_max的分析
+
+只有一个服务器可以跑多了：
+
+![image-20250517230939552](studynotes/image-20250517230939552.png)
+
+其他的就会卡在下面这个65535这：
+
+![image-20250517230910124](studynotes/image-20250517230910124.png)
+
+最终会：
+
+![image-20250517231101882](studynotes/image-20250517231101882.png)
+
+> 这边一个65535是什么原因呢
+>
+> 检查一下几点：
+>
+> 1. fs.file-max =397320， fd个数与fd的最大。
+> 2. nf_conntrack_max检查
+
+
+
+> 要修改 `file-max` 和 `nf_conntrack_max` 参数，请按照以下步骤操作：
+>
+> ------
+>
+> ### **1. 修改 `file-max`（系统最大文件句柄数）**
+>
+> #### **临时修改**（重启后失效）：
+>
+> ```
+> echo 1048576 | sudo tee /proc/sys/fs/file-max
+> ```
+>
+> #### **永久修改**：
+>
+> 1. 编辑/etc/sysctl.conf
+>
+>    ```
+>    sudo nano /etc/sysctl.conf
+>    ```
+>
+> 2. 添加以下内容：
+>
+>    ```
+>    fs.file-max = 1048576
+>    ```
+>
+> 3. 使配置生效：
+>
+>    ```
+>    sudo sysctl -p
+>    ```
+>
+> ------
+>
+> ### **2. 查询和修改 `nf_conntrack_max`（连接跟踪表最大条目数）**
+>
+> #### **查询当前值**：
+>
+> ```
+> cat /proc/sys/net/ipv4/netfilter/ip_conntrack_max
+> # 或
+> sysctl net.nf_conntrack_max
+> 
+> 
+> 没有反应
+> sudo modprobe nf_conntrack
+> ```
+>
+> #### **临时修改**（重启后失效）：
+>
+> ```
+> sudo modprobe nf_conntrack
+> 
+> echo 1048576 | sudo tee /proc/sys/net/netfilter/nf_conntrack_max
+> # 或
+> sudo sysctl -w net.nf_conntrack_max=1048576
+> ```
+>
+> #### **永久修改**：
+>
+> 1. 编辑/etc/sysctl.conf：
+>
+>    ```
+>    sudo nano /etc/sysctl.conf
+>    ```
+>
+> 2. 添加以下内容（例如设置为524288）
+>
+>    ```
+>    net.nf_conntrack_max = 524288
+>    ```
+>
+> 3. 使配置生效：
+>
+>    ```
+>    sudo sysctl -p
+>    ```
+
+
+
+
+
+
+
+==视频中的解决办法！！！！！==
+
+```bash
+sudo vim /etc/sysctl.conf
+#net.ipv4.conf.all.log_martians = 1
+net.ipv4.tcp_mem=262144524288786432
+net.ipv4.tcp_wmem =1024 1024 2048
+net.ipv4.tcp_rmem = 1024 1024 2048
+fs.file-max=1048576
+net.nf_conntrack_max=1048576
+    
+sudo sysctl -p
+```
+
+
+
+
+
+
+
+---
+
+
+
+## 6. 百万并发 tcp wmem与rmem的调参与实现
+
+![image-20250518010648003](studynotes/image-20250518010648003.png)
+
+
+
+> 卡在80w了妈的。
+>
+> 不确定是不是发生了**内存回收！！！**
+>
+> 
+>
+> 还是使用视频方法吧
+>
+> ==视频中的解决办法！！！！！==
+>
+> ```bash
+> sudo vim /etc/sysctl.conf
+> #net.ipv4.conf.all.log_martians = 1
+> net.ipv4.tcp_mem=262144524288786432
+> net.ipv4.tcp_wmem =2048 2048 4096
+> net.ipv4.tcp_rmem = 2048 2048 4096
+> fs.file-max=1048576
+> net.nf_conntrack_max=1048576
+>     
+> sudo sysctl -p
+> ```
+
+
+
+> 操！！！！没有用  应该是内存回收了！！！但是怎么显示不对啊
+>
+> ![image-20250518011850442](studynotes/image-20250518011850442.png)
+>
+> ==**调整tcp协议栈！！！！**==
+>
+> 
+
+
+
+
+
+> 办法都试完了 ！！！！最后还是增大了内存到8g，才实现了百万连接！！！
+>
+> **感觉虽然是内存优化，但是实际现存不够还是不行！！！！**
+
+![image-20250518020834722](studynotes/image-20250518020834722.png)
+
+
+
+![image-20250518020843692](studynotes/image-20250518020843692.png)
+
+
+
+有个小点，关闭连接的时候，会大量并发，瞬间顶满CPU：
+
+![image-20250517231159278](studynotes/image-20250517231159278.png)
+
+
+
+最终完整实现！！！
 
 
 
