@@ -3020,8 +3020,1018 @@ UDP收数据 → kcp_input() → 解包、更新确认 → kcp_recv() → 应用
 
 ## 2.3.1 协程设计原理与汇编实现（ntyco开源项目）
 
+首先是引入部分！！！
+
+> 1. 为什么会要有协程？
+> 2. 协程实现过程，原语操作（哪些原语操作）**不可以被分割的操作就是原语操作**
+> 3. 协程如何定义 struct coroutine
+> 4. 调度器如何定义， struct scheduler
+> 5. 调度器的执行策略
+> 6. posix api做到一致
+> 7. 协程的执行流程
+> 8. 协程的多核模式
+> 9. 协程的性能如何测试——100w并发
+
+
+
+> ==**需要仿写代码！！！再结合视频！！！！**==
+>
+> 1. 听完以后，不知道重点在哪里？
+> 2. 自己方式实现完以后，不知道如何用？
+>
+> 学完之后可以用在：
+>
+> 1. webserver协程做为网络库，
+> 2. kv存储，redis
+> 3. 图床 网络层
 
 
 
 
 
+### 一、为什么要有协程
+
+#### 1.1 dns解析客户端
+
+**实现基于UDP协议的高性能异步DNS解析客户端！**
+
+```mermaid
+graph LR
+    A[Main Thread] -->|提交请求| B(Async Context)
+    B --> C[EPOLL Instance]
+    C --> D[[Worker Thread]]
+    D -->|事件就绪| E[DNS Server]
+    E -->|响应数据| F[Callback]
+```
+
+![image-20250323230241861](note/image-20250323230241861.png)
+
+首先是主函数！！！
+
+![image-20250323230141061](note/image-20250323230141061.png)
+
+这边分为同步和异步两种写法，分析区别！！！
+
+![image-20250704211702255](note/image-20250704211702255.png)
+
+> 如果要说两者的差异的话：
+>
+> ==异步的速度更快！！！==
+>
+> ![image-20250704221815720](note/image-20250704221815720.png)
+>
+> ![image-20250704221829705](note/image-20250704221829705.png)
+
+**1. 同步阻塞模式（#if 1）**
+
+```c
+for (i = 0;i < count;i ++) {
+    dns_client_commit(domain[i]); // 顺序执行每个DNS查询
+}
+```
+
+运行特征：
+
+- **单线程串行执行**：逐个处理域名解析
+
+- **同步阻塞I/O**：每个recvfrom调用都会阻塞线程
+
+- **无并发能力**：总耗时 = Σ单次查询耗时
+
+- **资源占用低**：无需维护上下文状态
+
+- **调试友好**：执行流程简单直观
+
+  
+
+**2. 异步非阻塞模式（#else）**
+
+```c
+struct async_context *ctx = dns_async_client_init();
+for (i = 0;i < count;i ++) {
+    dns_async_client_commit(ctx, ...); // 批量提交请求
+}
+getchar(); // 保持主线程存活
+```
+
+运行特征：
+
+- **事件驱动架构**：通过epoll管理所有socket
+- **非阻塞I/O**：设置O_NONBLOCK标志
+- **多路复用机制**：单线程处理数千并发请求
+- **回调通知机制**：通过dns_async_client_result_callback异步返回结果
+- **高并发低延迟**：总耗时 ≈ 最慢单次查询耗时
+
+
+
+**3. 关键差异对照表**
+
+|   特性    |      同步模式      |        异步模式        |
+| :-------: | :----------------: | :--------------------: |
+| 线程模型  |     单线程串行     |    主线程+工作线程     |
+|  I/O方式  |       阻塞型       |      非阻塞+epoll      |
+| 内存消耗  |    低（约1MB）     | 较高（约10MB/万连接）  |
+| CPU利用率 | 低（主要等待I/O）  | 高（事件循环密集计算） |
+| 适合场景  | 少量请求、简单调试 |     高并发生产环境     |
+|  吞吐量   |      数十QPS       |        万级QPS         |
+
+
+
+#### 1.2 之前百万并发测试
+
+一开始的代码测试如下：
+
+![image-20250705000630336](note/image-20250705000630336.png)
+
+![image-20250705000637967](note/image-20250705000637967.png)
+
+
+
+上面代码里面使用的是线程池，如果不使用线程池的话，可以看到时间明显变长
+![image-20250705024156088](note/image-20250705024156088.png)
+
+![image-20250323233208617](note/image-20250323233208617.png)
+
+![image-20250323233158960](note/image-20250323233158960.png)
+
+![image-20250324015025990](note/image-20250324015025990.png)
+
+![image-20250329232427915](note/image-20250329232427915.png)
+
+
+
+
+
+---
+
+
+
+#### 1.3 异步的优点和缺点
+
+优点的话主要是：
+
+1. 性能高
+
+缺点的话：
+
+1. 主要是不好理解，以下图举例：如果我们的回调函数中再次嵌套回调调用的话，就会产生很多的理解困难。
+
+
+
+
+
+
+
+---
+
+
+
+#### 1.4 为什么要有协程
+
+**同步的编程思路，异步的性能**
+
+>  互联网产品中存在的同时有多个请求存在的功能
+>
+>  1. **社交媒体动态加载（微博/Twitter）**
+>
+>  - **同步**：用户下拉刷新动态时，实时加载最新内容（等待服务端响应）。
+>  - **异步**：后台预加载用户未读的评论、点赞通知（非阻塞）。
+>  - **协程**：单线程内并发处理数万用户动态的渲染和分页逻辑。
+>  - **技术原理**：动态流使用协程批量加载数据，用户交互操作（如点赞）通过异步队列处理，实时刷新界面需同步确认结果。
+>
+>  ------
+>
+>  2. **网盘文件上传（Google Drive/百度网盘）**
+>
+>  - **同步**：显示实时上传进度条（需即时反馈）。
+>  - **异步**：后台分片上传文件到分布式存储（非阻塞IO）。
+>  - **协程**：同时管理多个文件分片的上传任务（如100个分片并发）。
+>  - **技术原理**：文件分片后通过协程批量提交到异步队列，进度更新通过同步回调触发前端渲染。
+>
+>  ------
+>
+>  3. **在线文档协作（腾讯文档/Google Docs）**
+>
+>  - **同步**：用户输入时实时同步内容到本地内存。
+>  - **异步**：将变更通过消息队列推送到其他协作用户。
+>  - **协程**：单连接处理多人协同的编辑冲突合并（如OT算法）。
+>  - **技术原理**：用户输入事件通过WebSocket同步到服务端，服务端用协程处理冲突，异步广播给其他客户端。
+>
+>  ------
+>
+>  4. **直播弹幕系统（B站/Twitch）**
+>
+>  - **同步**：用户发送弹幕时立即显示在本机（本地渲染）。
+>  - **异步**：弹幕消息批量推送到所有观众客户端（减少高频IO压力）。
+>  - **协程**：单服务节点处理数万条弹幕的过滤、合并和分发。
+>  - **技术原理**：弹幕先通过协程合并压缩，再通过异步消息队列广播，本地渲染需同步保证低延迟。
+>
+>  ------
+>
+>  5. **打车派单系统（Uber/滴滴）**
+>
+>  - **同步**：用户点击叫车后实时等待司机接单（短时阻塞）。
+>  - **异步**：后台计算附近司机并批量推送订单（高延迟操作）。
+>  - **协程**：并行匹配乘客需求与司机画像（如路线/评分）。
+>  - **技术原理**：派单算法通过协程处理多维度数据，同步返回接单状态，司机响应通过异步事件触发。
+
+
+
+
+
+---
+
+
+
+### 二、协程如何实现
+
+![image-20250705143234133](note/image-20250705143234133.png)
+
+考虑到这边会有一个等待的延迟的问题，==**所以我们这边需要考虑使用一种switch的方法是的可以在多个等待的业务之间进行切换。**==
+
+![image-20250705143336564](note/image-20250705143336564.png)
+
+**下面这部分就是协程的实现，通过函数之间的跳转来执行一些异步操作。**
+
+![image-20250330000739063](note/image-20250330000739063.png)
+
+
+
+#### 2.1 **函数结构与调用关系**
+
+这张图描述了一个基于**异步非阻塞IO**和**协程切换**的编程模型，核心是通过多种跳转方式实现函数间的非顺序执行。以下是图中函数的逻辑分层：
+
+| 函数名        | 核心操作                       | 作用                                             |
+| ------------- | ------------------------------ | ------------------------------------------------ |
+| `func()`      | `setjmp()` + `async_send/recv` | 入口函数，初始化协程上下文，发起异步IO操作       |
+| `func()`      | `async_send/recv`              | 子协程逻辑，处理IO的中间阶段                     |
+| `func()`      | `async_send/recv`              | 子协程逻辑，处理IO的最终阶段                     |
+| `func()`      | `send()/recv()`                | 传统同步IO操作（可能作为对比存在）               |
+| `async_xxx()` | `poll(fd, 0)` + `switch()`     | 异步IO事件循环，检测文件描述符状态并触发协程切换 |
+
+
+
+---
+
+
+
+#### 2.2. **关键流程**
+
+```plaintext
+用户调用入口函数(func)
+  → setjmp保存当前上下文
+  → async_send发起异步发送
+  → 进入异步事件循环(async_xxx)
+    → poll检测到fd就绪
+    → switch跳转到对应回调
+      → 处理接收数据(func)
+      → async_recv继续异步操作
+```
+
+
+
+
+
+---
+
+
+
+#### 2.3 跳转方式对比与应用场景
+
+| 方式       | 性能 | 安全性 | 可移植性 | 典型应用场景            |
+| ---------- | ---- | ------ | -------- | ----------------------- |
+| `setjmp`   | 中   | 低     | 高       | 简单异常处理            |
+| `ucontext` | 低   | 中     | 中       | 教学用协程实现          |
+| 手写汇编   | 高   | 高     | 低       | 高性能协程库（如libco） |
+
+
+
+
+
+---
+
+
+
+#### 2.4 使用setjmp和longjmp
+
+![image-20250330002356685](note/image-20250330002356685-1743265442382-1.png)
+
+代码执行流程分析
+
+**简单来说每次调用longjmp的时候都会回到我们设置的setjmp的位置！！！**
+
+|      **行为**       |                           **说明**                           |
+| :-----------------: | :----------------------------------------------------------: |
+|    `setjmp(env)`    | 首次返回`0`；被`longjmp`跳回时返回`longjmp`的第二个参数（若为`0`则返回`1`）。 |
+| `longjmp(env, val)` |      跳转到`setjmp`的位置，强制其返回`val`（`val≠0`）。      |
+|   **代码正确性**    | 理解完全正确，`longjmp`会不断跳回`setjmp`处，返回值依次递增。 |
+
+同时！！！
+
+==**不适合在多线程中  因为有越栈的风险！！！**==
+
+
+
+
+
+---
+
+
+
+#### 2.5. 使用`ucontext`
+
+```c
+#define _GNU_SOURCE
+
+#include <dlfcn.h> // 用于动态链接库函数的声明
+
+#include <stdio.h>    // 用于标准输入输出函数
+#include <ucontext.h> // 用于上下文切换相关的函数和结构体
+#include <string.h>   // 用于字符串处理函数
+#include <unistd.h>   // 用于POSIX操作系统API函数
+#include <fcntl.h>    // 用于文件控制操作函数
+
+ucontext_t ctx[3];
+ucontext_t main_ctx;
+
+int count = 0;
+
+// 协程coroutine
+void func1(void)
+{
+	while (count ++ < 30) {
+		printf("1\n");
+		swapcontext(&ctx[0], &ctx[1]);
+		//swapcontext(&ctx[0], &main_ctx);
+		printf("4\n");
+	}
+}
+
+void func2(void)
+{
+	while (count ++ < 30) {
+		printf("2\n");
+		swapcontext(&ctx[1], &ctx[2]);
+		//swapcontext(&ctx[1], &main_ctx);
+		printf("5\n");
+	}
+}
+
+void func3(void)
+{
+	while (count ++ < 30) {
+		printf("3\n");
+		swapcontext(&ctx[2], &ctx[0]);
+		//swapcontext(&ctx[2], &main_ctx);
+		printf("6\n");
+	}
+}
+
+// 调度器 schedule
+int main()
+{
+    char stack1[2048];
+    char stack2[2048];
+    char stack3[2048];
+
+    // 初始化上下文
+    memset(&main_ctx, 0, sizeof(main_ctx));
+
+    // 创建协程1
+    memset(stack1, 0, sizeof(stack1));
+    getcontext(&ctx[0]);
+    ctx[0].uc_stack.ss_sp = stack1; // 设置协程1的栈空间
+    ctx[0].uc_stack.ss_size = sizeof(stack1); // 设置协程1的栈大小
+    ctx[0].uc_link = &main_ctx; // 设置协程1的链接上下文
+    // makecontext函数用于将func1函数与ctx[0]关联
+    makecontext(&ctx[0], func1, 0);
+
+    // 创建协程2
+    memset(stack2, 0, sizeof(stack2));
+    getcontext(&ctx[1]);
+    ctx[1].uc_stack.ss_sp = stack2;
+    ctx[1].uc_stack.ss_size = sizeof(stack2);
+    ctx[1].uc_link = &main_ctx;
+    makecontext(&ctx[1], func2, 0);
+
+    // 创建协程3
+    memset(stack3, 0, sizeof(stack3));
+    getcontext(&ctx[2]);
+    ctx[2].uc_stack.ss_sp = stack3;
+    ctx[2].uc_stack.ss_size = sizeof(stack3);
+    ctx[2].uc_link = &main_ctx;
+    makecontext(&ctx[2], func3, 0);
+
+    // 启动协程1
+    printf("main start\n");
+    swapcontext(&main_ctx, &ctx[0]);
+    printf("main end\n");
+    return 0;
+}
+```
+
+
+
+![image-20250705155014036](note/image-20250705155014036.png)
+
+这样看起来的话，整个流程是不可控的，整体看起来很乱，但是我们可以修改，将他变为转回我们的main_ctx最终的实现代码，以及后面的实现逻辑如下：
+
+![image-20250330020731095](note/image-20250330020731095.png)
+
+```c
+#define _GNU_SOURCE
+
+#include <dlfcn.h> // 用于动态链接库函数的声明
+
+#include <stdio.h>    // 用于标准输入输出函数
+#include <ucontext.h> // 用于上下文切换相关的函数和结构体
+#include <string.h>   // 用于字符串处理函数
+#include <unistd.h>   // 用于POSIX操作系统API函数
+#include <fcntl.h>    // 用于文件控制操作函数
+
+ucontext_t ctx[3];
+ucontext_t main_ctx;
+
+int count = 0;
+
+void func1(void)
+{
+    while (count++ < 30)
+    {
+        printf("1\n");
+        // swapcontext(&ctx[0], &ctx[1]);
+        swapcontext(&ctx[0], &main_ctx);
+        printf("4\n");
+    }
+}
+
+void func2(void)
+{
+    while (count++ < 30)
+    {
+        printf("2\n");
+        // swapcontext(&ctx[1], &ctx[2]);
+        swapcontext(&ctx[1], &main_ctx);
+        printf("5\n");
+    }
+}
+
+void func3(void)
+{
+    while (count++ < 30)
+    {
+        printf("3\n");
+        // swapcontext(&ctx[2], &ctx[0]);
+        swapcontext(&ctx[2], &main_ctx);
+        printf("6\n");
+    }
+}
+
+// schedule
+int main()
+{
+    char stack1[2048];
+    char stack2[2048];
+    char stack3[2048];
+
+    // 初始化上下文
+    memset(&main_ctx, 0, sizeof(main_ctx));
+
+    // 创建协程1
+    memset(stack1, 0, sizeof(stack1));
+    getcontext(&ctx[0]);
+    ctx[0].uc_stack.ss_sp = stack1;           // 设置协程1的栈空间
+    ctx[0].uc_stack.ss_size = sizeof(stack1); // 设置协程1的栈大小
+    ctx[0].uc_link = &main_ctx;               // 设置协程1的链接上下文
+    // makecontext函数用于将func1函数与ctx[0]关联
+    makecontext(&ctx[0], func1, 0);
+
+    // 创建协程2
+    memset(stack2, 0, sizeof(stack2));
+    getcontext(&ctx[1]);
+    ctx[1].uc_stack.ss_sp = stack2;
+    ctx[1].uc_stack.ss_size = sizeof(stack2);
+    ctx[1].uc_link = &main_ctx;
+    makecontext(&ctx[1], func2, 0);
+
+    // 创建协程3
+    memset(stack3, 0, sizeof(stack3));
+    getcontext(&ctx[2]);
+    ctx[2].uc_stack.ss_sp = stack3;
+    ctx[2].uc_stack.ss_size = sizeof(stack3);
+    ctx[2].uc_link = &main_ctx;
+    makecontext(&ctx[2], func3, 0);
+
+    printf("main start\n");
+    while (count < 30)
+    {
+        swapcontext(&main_ctx, &ctx[count % 3]); //调度器逻辑！！！
+        printf("main continue\n");
+    }
+    printf("main end\n");
+    return 0;
+}
+```
+
+
+
+> #### 协程的核心价值总结
+>
+> - **并发性**：通过非阻塞 I/O 和协作式切换，单线程内实现高并发。
+> - **资源效率**：避免线程/进程的创建和切换开销。
+> - **代码可读性**：用同步写法实现异步逻辑（如 `async/await` 语法）。
+
+
+
+
+
+![image-20250330142656840](note/image-20250330142656840.png)
+
+
+
+
+
+
+
+---
+
+
+
+### 三、用Hook实现一个Tcp
+
+#### 3.1 用hook实现一个文件读写的功能
+
+```c
+#define _GNU_SOURCE
+
+#include <dlfcn.h> // 用于动态链接库函数的声明
+
+#include <stdio.h>    // 用于标准输入输出函数
+#include <ucontext.h> // 用于上下文切换相关的函数和结构体
+#include <string.h>   // 用于字符串处理函数
+#include <unistd.h>   // 用于POSIX操作系统API函数
+#include <fcntl.h>    // 用于文件控制操作函数
+
+#define BUFFER_LENGTH 128
+
+// hook
+typedef ssize_t (*read_t)(int fd, void *buf, size_t count);
+read_t read_f;
+
+typedef ssize_t (*write_t)(int fd, const void *buf, size_t count);
+write_t write_f;
+
+ssize_t read(int fd, void *buf, size_t count)
+{
+    ssize_t res = read_f(fd, buf, count);
+
+    printf("read: %s\n", (const char *)buf);
+
+    return res;
+}
+
+ssize_t write(int fd, const void *buf, size_t count)
+{
+    ssize_t res = write_f(fd, buf, count);
+
+    printf("write: %s\n", (const char *)buf);
+
+    return res;
+}
+
+void init_hook(void)
+{
+    if (!read_f)
+    {
+        read_f = dlsym(RTLD_NEXT, "read");
+    }
+    if (!write_f)
+    {
+        write_f = dlsym(RTLD_NEXT, "write");
+    }
+}
+
+// schedule
+int main()
+{
+    init_hook();
+    int fd = open("a.txt", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    if (fd < 0)
+    {
+        return -1;
+    }
+    char *str = "1234567890\n";
+    ssize_t write_ret = write(fd, str, strlen(str));
+    printf("write result: %d\n", (int)write_ret);
+
+    close(fd);
+    lseek(fd, 0, SEEK_SET);  // 将文件指针重置到开头
+
+   
+    char buffer[BUFFER_LENGTH];
+    memset(buffer, 0, BUFFER_LENGTH);
+
+    read(fd, buffer, BUFFER_LENGTH);
+
+    printf("buffer is: %s\n", buffer);
+    return 0;
+}
+```
+
+
+
+我们目前的代码来看的话，最终执行出来的结果是这样的：
+
+```bash
+zhenxing@ubuntu:~/share/2.3自研协程框架/2.3.1 协程设计原理与汇编实现/2.3.1-coroutine$ cc hook_zzx.c -ldl -o hook_zzx
+zhenxing@ubuntu:~/share/2.3自研协程框架/2.3.1 协程设计原理与汇编实现/2.3.1-coroutine$ ./hook_zzx
+write: 1234567890
+
+write result: 11
+read: 1234567890
+
+buffer is: 1234567890
+
+```
+
+
+
+
+
+---
+
+
+
+#### 3.2 实现一个简单的tcp连接
+
+![](note/image-20250705222453740.png)
+
+这边的话最重要的，也是我们hook的功能就是：
+
+> ==**通过hook的方式对于我们的原有的系统的api进行一些功能的拓展**==
+>
+> 例如这个地方就是我们在不修改本地代码的情况下，进行一个协程库的拓展。
+
+
+
+
+
+下面将这个hook迁移到tcp连接来：
+
+> 如果不使用hook的话，代码如下：
+
+```c
+
+int main()
+{
+
+	// init_hook();
+
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	struct sockaddr_in serveraddr;
+	memset(&serveraddr, 0, sizeof(struct sockaddr_in));
+
+	serveraddr.sin_family = AF_INET;
+	serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	serveraddr.sin_port = htons(2048);
+
+	if (-1 == bind(sockfd, (struct sockaddr *)&serveraddr, sizeof(struct sockaddr)))
+	{
+		perror("bind");
+		return -1;
+	}
+
+	listen(sockfd, 10);
+
+	struct sockaddr_in clientaddr;
+	socklen_t len = sizeof(clientaddr);
+	int clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &len);
+	printf("accept\n");
+
+	while (1)
+	{
+
+		char buffer[128] = {0};
+		int count = read(clientfd, buffer, 128);
+		if (count == 0)
+		{
+			break;
+		}
+		write(clientfd, buffer, count);
+		printf("sockfd: %d, clientfd: %d, count: %d, buffer: %s\n", sockfd, clientfd, count, buffer);
+	}
+
+	return 0;
+}
+```
+
+最终的输出连接结果如下
+
+```bash
+zhenxing@ubuntu:~/share/2.3自研协程框架/2.3.1 协程设计原理与汇编实现/2.3.1-coroutine$ gcc hook_zzx_tcp.c -o hook_tcp -ldl
+zhenxing@ubuntu:~/share/2.3自研协程框架/2.3.1 协程设计原理与汇编实现/2.3.1-coroutine$ ./hook_tcp 
+accept
+sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
+sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
+sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
+sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
+sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
+sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
+
+```
+
+
+
+
+
+---
+
+
+
+#### 3.3 用hook实现这个tcp连接
+
+```c
+#define _GNU_SOURCE
+
+#include <dlfcn.h>
+
+#include <stdio.h>
+#include <ucontext.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <sys/socket.h>
+#include <errno.h>
+#include <netinet/in.h>
+
+#include <pthread.h>
+#include <sys/poll.h>
+#include <sys/epoll.h>
+
+#if 1
+// hook
+typedef ssize_t (*read_t)(int fd, void *buf, size_t count);
+read_t read_f = NULL;
+
+typedef ssize_t (*write_t)(int fd, const void *buf, size_t count);
+write_t write_f = NULL;
+
+ssize_t read(int fd, void *buf, size_t count)
+{
+	ssize_t ret = read_f(fd, buf, count);
+	printf("read: %s\n", (char *)buf);
+	return ret;
+}
+
+ssize_t write(int fd, const void *buf, size_t count)
+{
+
+	printf("write: %s\n", (const char *)buf);
+
+	return write_f(fd, buf, count);
+}
+
+void init_hook(void)
+{
+
+	if (!read_f)
+	{
+		read_f = dlsym(RTLD_NEXT, "read"); // dlsym是动态链接库函数，用于获取函数地址
+	}
+
+	if (!write_f)
+	{
+		write_f = dlsym(RTLD_NEXT, "write");
+	}
+}
+
+#endif
+
+int main()
+{
+
+	init_hook();
+
+	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	struct sockaddr_in serveraddr;
+	memset(&serveraddr, 0, sizeof(struct sockaddr_in));
+
+	serveraddr.sin_family = AF_INET;
+	serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	serveraddr.sin_port = htons(9999);
+
+	if (-1 == bind(sockfd, (struct sockaddr *)&serveraddr, sizeof(struct sockaddr)))
+	{
+		perror("bind");
+		return -1;
+	}
+
+	listen(sockfd, 10);
+
+	struct sockaddr_in clientaddr;
+	socklen_t len = sizeof(clientaddr);
+	int clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &len);
+	printf("accept\n");
+
+	while (1)
+	{
+
+		char buffer[128] = {0};
+		int count = read(clientfd, buffer, 128);
+		if (count == 0)
+		{
+			break;
+		}
+		write(clientfd, buffer, count);
+		printf("sockfd: %d, clientfd: %d, count: %d, buffer: %s\n", sockfd, clientfd, count, buffer);
+	}
+
+	return 0;
+}
+
+```
+
+
+
+
+
+这个最终输出的话是：
+
+```bash
+zhenxing@ubuntu:~/share/2.3自研协程框架/2.3.1 协程设计原理与汇编实现/2.3.1-coroutine$ gcc hook_zzx_tcp.c -o hook_tcp -ldl
+zhenxing@ubuntu:~/share/2.3自研协程框架/2.3.1 协程设计原理与汇编实现/2.3.1-coroutine$ ./hook_tcp 
+accept
+read: Welcome to NetAssist
+write: Welcome to NetAssist
+sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
+read: Welcome to NetAssist
+write: Welcome to NetAssist
+sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
+
+```
+
+
+
+
+
+### 【TODO】四、协程实现一个tcp连接
+
+> ### 协程如何定义
+>
+> 用协程解决网络io处理的开源框架
+>
+> TCP通信天然存在 **阻塞等待**（如`accept`、`read`）和 **高并发**（如10万连接）需求。传统多线程模型存在资源消耗大、上下文切换慢的问题。协程通过 **用户态轻量级线程** + **非阻塞I/O事件驱动** 解决此矛盾。
+>
+> 三种状态 **`ready`、`wait`、`sleep`** 对应TCP连接的不同阶段：
+>
+> | 协程状态  | TCP通信场景                                                  |
+> | --------- | ------------------------------------------------------------ |
+> | **Ready** | 连接已建立，数据可读/可写，协程处于可执行队列等待调度        |
+> | **Wait**  | 等待Socket数据到达（`read`阻塞）、等待发送缓冲区空闲（`write`阻塞） |
+> | **Sleep** | 定时任务（如心跳包超时检测、连接保活）                       |
+
+
+
+> ![image-20250707163243856](note/image-20250707163243856.png)
+>
+> 调度器结构体 `struct scheduler` 是协程框架的核心：
+>
+> ```c
+> struct scheduler {
+>     int epfd;                          // epoll实例的文件描述符
+>     struct epoll_event events[1024];   // epoll事件数组
+>     
+>     // 协程状态管理数据结构
+>     queue_node(coroutine) ready_head;  // 就绪队列（双向链表）
+>     rbtree_root(coroutine) wait;        // 等待I/O的红黑树（按fd组织）
+>     rbtree_root(coroutine) sleep;      // 休眠协程的红黑树（按唤醒时间组织）
+> };
+> ```
+>
+> ##### **1. `epoll`事件驱动**
+>
+> - **作用**：监听所有TCP Socket的I/O事件（可读、可写、错误）。
+>
+> - **关键代码**：
+>
+>   ```c
+>   // 初始化epoll
+>   scheduler.epfd = epoll_create1(0);
+>   
+>   // 添加socket到epoll监听
+>   struct epoll_event ev;
+>   ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
+>   ev.data.fd = sockfd;
+>   epoll_ctl(scheduler.epfd, EPOLL_CTL_ADD, sockfd, &ev);
+>   ```
+>
+> ##### **2. 就绪队列（`ready_head`）**
+>
+> - **数据结构**：双向链表（`TAILQ`或手动实现）。
+> - **用途**：存放所有可立即执行的协程。调度器轮询此队列，依次执行协程。
+>
+> ##### **3. 等待红黑树（`wait`）**
+>
+> - **Key**：文件描述符（`fd`）。
+> - **用途**：快速查找等待某个Socket I/O事件的协程。当`epoll`检测到事件时，从红黑树中找到对应协程，移入就绪队列。
+>
+> ##### **4. 休眠红黑树（`sleep`）**
+>
+> - **Key**：唤醒时间戳（绝对时间）。
+> - **用途**：管理定时任务（如超时重传）。每次调度时检查最早唤醒时间，若超时则移入就绪队列。
+>
+> ---
+>
+> #### **4.5 处理10万并发的关键技术**
+>
+> ##### **1. 协程轻量级**
+>
+> - **内存消耗**：每个协程独立栈（默认64KB\~1MB），10万协程仅需约6\~100GB内存（可优化至2KB/协程）。
+> - **切换开销**：`swapcontext` 约50ns，远低于线程切换（1~10μs）。
+>
+> ##### **2. 高效数据结构**
+>
+> - **红黑树**：查找、插入、删除时间复杂度为O(log n)，适合管理10万级协程。
+> - **epoll**：内核事件通知机制，可扩展至百万连接。
+>
+> ##### **3. 非阻塞I/O Hook**
+>
+> - **Hook系统调用**：拦截`read`、`write`等，在数据未就绪时挂起协程。
+>
+>   ```c
+>   ssize_t read(int fd, void *buf, size_t count) {
+>       struct coroutine *co = current_co();
+>       if (数据未就绪) {
+>           co->state = WAIT;
+>           rbtree_insert(scheduler.wait, co); // 按fd插入红黑树
+>           swapcontext(&co->ctx, &scheduler_ctx);
+>       }
+>       return real_read(fd, buf, count);
+>   }
+>   ```
+>
+
+
+
+
+
+> #### **4.6 完整TCP协程通信流程**
+>
+> ```mermaid
+> sequenceDiagram
+>     participant Client
+>     participant Server
+>     participant Scheduler
+>     participant Coroutine
+>     
+>     Client->>Server: connect()
+>     Server->>Scheduler: accept()触发epoll事件
+>     Scheduler->>Coroutine: 创建协程，加入ready队列
+>     Coroutine->>Scheduler: read()时数据未就绪，挂起到wait树
+>     Scheduler->>epoll: 监听所有fd
+>     epoll-->>Scheduler: 数据到达，通知对应fd
+>     Scheduler->>Coroutine: 从wait树移入ready队列
+>     Coroutine->>Client: 处理数据并回写
+> ```
+>
+
+
+
+
+
+
+
+### 【TODO】五、汇编实现协程
+
+![image-20250331232244195](note/image-20250331232244195.png)
+
+![image-20250331234342503](note/image-20250331234342503.png)
+
+![image-20250331234356490](note/image-20250331234356490.png)
+
+
+
+
+
+---
+
+
+
+### 【TODO】六、怎么用协程库呢
+
+![image-20250331235121821](note/image-20250331235140841.png)
+
+![image-20250331235127221](note/image-20250331235127221.png)
+
+![image-20250331235311323](note/image-20250331235311323.png)
+
+![image-20250331235316524](note/image-20250331235316524.png)
+
+![image-20250331235328226](note/image-20250331235328226.png)
+
+![image-20250331235333151](note/image-20250331235333151.png)
+
+![image-20250707182935151](note/image-20250707182935151.png)
