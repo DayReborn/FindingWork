@@ -1241,7 +1241,7 @@ c
 >   ```c
 >   // 线程1：添加事件
 >   epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
->     
+>       
 >   // 线程2：删除事件
 >   epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
 >   ```
@@ -3920,7 +3920,7 @@ sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
 >   ```c
 >   // 初始化epoll
 >   scheduler.epfd = epoll_create1(0);
->   
+>     
 >   // 添加socket到epoll监听
 >   struct epoll_event ev;
 >   ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
@@ -4035,3 +4035,1577 @@ sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
 ![image-20250331235333151](note/image-20250331235333151.png)
 
 ![image-20250707182935151](note/image-20250707182935151.png)
+
+
+
+
+
+
+
+# 2.4 基于dpdk的用户态协议栈的实现
+
+> 首先这个章节的话，我们的学习主要集中在以下几个部分：
+>
+> 1. 网卡
+> 2. 网卡驱动
+> 3. 协议栈
+>    - 以太网
+>    - IP协议解析
+>    - udp解析
+>    - tcp解析
+> 4. posix api
+
+
+
+
+
+---
+
+
+
+## 2.4.1 用户态协议栈设计实现
+
+> 本次课实现目标：
+>
+> 1. dpdk的环境的搭建
+> 2. 用dpdk实现收到数据
+
+
+
+---
+
+
+
+### 一、dpdk的环境的搭建
+
+#### 1. 多队列网卡
+
+显示如下才是多队列网卡，如果不是这样的就不是
+
+![image-20250708004337213](note/image-20250708004337213.png)
+
+例如我这样的就不是：
+
+![image-20250708004425891](note/image-20250708004425891.png)
+
+
+
+这个时候我选择添加了一个桥接网卡到我的这台虚拟机上来，同时设置为我们需要的多队列网卡，这时候就有不少问题出现了。
+
+首先我是用VMware来进行的网卡设置，但是加入的也是`e1000`这样的非多队列网卡
+
+所以还是要按照视频所说的方法来进行设置。
+
+==简单来说就是一改一加==
+
+![image-20250708011252736](note/image-20250708011252736.png)
+
+但是添加之后我出现了这样的情况——简单来说就是网卡识别不到了
+
+![image-20250708011327116](note/image-20250708011327116.png)
+
+所以需要激活：
+
+> #### 步骤1：激活ens160接口
+>
+> ```bash
+> sudo ip link set ens160 up  # 启用接口
+> sudo dhclient ens160        # 自动获取IP
+> ```
+>
+> #### 步骤2：检查驱动状态
+>
+> ```bash
+> lsmod | grep vmxnet3  # 验证驱动加载
+> ```
+
+![image-20250708011548771](note/image-20250708011548771.png)
+
+
+
+修改激活之后成功
+
+
+
+
+
+---
+
+
+
+#### 2. hugepage，大页/巨页
+
+> 2M, 1G
+
+
+
+```
+"find_preseed=/preseed.cfg noprompt net.ifnames=0 ipv6.disable=1 default_hugepagesz=1G hugepagesz=2M hugepages=1024 isolcpus=0-2"
+```
+
+![image-20250708025652243](note/image-20250708025652243.png)
+
+
+
+
+
+#### 3. 多队列网卡使用
+
+> `rte.eth_rx_burst(）`
+>
+> **这个里面可以指定哪一个网卡，哪一个id，哪一个中断（对于多队列网卡）**
+>
+> 可以考虑给一个中断一个队列一个线程
+
+
+
+多队列网卡的话会创建更多的连接  ，所以比较快
+
+![image-20250708025824737](note/image-20250708025824737.png)
+
+
+
+
+
+> 1. 网卡本质上不属于任何一层，本质上是做数模模数转换
+> 2. 网卡驱动（使得网卡可以正常工作汽车的驾驶员）——a.Nic 内核提供的网络协议子模板
+>                                                  b. 在上面的子系统框架的基础上的话适配内核有不同的网卡例如e1000
+> 3. ==**我们的tcp/ip协议栈！！！只认识sk_buffer, 通过这个玩意就可以找到原始的网卡中的数据在哪！！**==
+>
+> ![image-20250708031932303](note/image-20250708031932303.png)
+>
+> ==**Q: 问题：网络通信海量的sk_buff选择什么数据结构保存？**==
+
+
+
+
+
+> **DPDK**
+>
+> ![image-20250708034322528](note/image-20250708034322528.png)
+>
+> PCI的地址UIO相当于高速口
+>
+> 走这边出来的就给他读入进来，截获pci的数据
+>
+> vfio跟uio类似，内核中有些网卡跟普通的网卡的驱动不一样，比较特殊（迈勒斯的网卡）
+>
+> kni（内核网络接口）
+>
+> 
+
+
+
+安装dpdk如果有问题这么处理：
+
+  ![image-20250708031449059](note/image-20250708031449059.png)
+
+
+
+> export RTE_SDK=/home/king/share/zzx/dpdk-stable-19.08.2/
+> export RTE_TARGET=x86_64-native-linux-gcc
+>
+> **启动SSH并开放防火墙**
+>
+> sudo service ssh start
+>
+> sudo ufw allow 22/tcp
+
+
+
+**==我日  我没有用root权限  不知道有没有问题==**
+
+
+
+
+
+
+
+
+
+### 二、DPDK相关知识点理解
+
+> 首先明确几个问题：
+>
+> 1. dpdk能不能提升Redis qps?  
+>    **×**  dpdk的作用主要不是处理小包的，主要是处理大包的
+> 2. dpdk能不能减少Nginx延迟？
+>    **×**  dpdk对延迟的作用也一般
+> 3. dpdk能不能提升吞吐量？
+>    ✔ 这是没问题的  包可以的
+>
+> 具体怎么用呢！！！！
+>
+> 常用在机房文件的拷贝这种!!!!配合radm
+>
+> ![image-20250708034322528](note/image-20250708034322528.png)
+>
+> 因为我们不用内核协议栈  所以我们需要自己定义一些协议栈
+>
+> 上面列出来了五种，这个玩意的优势就是！！！**==我们有更多的空间来进行开发==**
+
+
+
+
+
+---
+
+
+
+
+
+> ### **1. DPDK核心机制详解**
+>
+> - **内核旁路（Kernel Bypass）**
+>   图中`网卡 → driver → uio/vfio → DPDK`的路径即核心创新：通过​**​UIO/VFIO​**​接管网卡控制权，使数据包直达用户态（Userspace），消除内核协议栈的上下文切换、内存复制等开销。
+> - **Hugepage关键作用**
+>   `hugepage`为DPDK提供​**​超大页内存支持​**​：减少TLB Miss，提升DMA效率，保障零拷贝数据传输（网卡→用户态应用）。
+> - **协议栈替代方案**
+>   DPDK可对接多种用户态协议栈（`ntytcp/4.4BSD/mtcp/lwip/vpp`），实现完整网络处理能力，无需内核参与。
+>
+> ------
+>
+> ### **2. KNI（Kernel NIC Interface）的定位**
+>
+> #### ▶ **存在的必要性**
+>
+> - **内核依赖场景保留**
+>
+>   虽然DPDK绕过内核，但某些功能仍需内核网络栈支持：
+>
+>   - ✅ **控制面管理**：ARP解析、ICMP响应、路由表维护
+>   - ✅ **遗留应用兼容**：依赖`socket()`等POSIX API的传统应用
+>   - ✅ **防火墙/NAT**：iptables等内核级网络策略
+>
+> - **数据回流路径**
+>   图中`DPDK → KNI`箭头表明：DPDK可将​**​指定流量注入内核协议栈​**​（如管理报文），实现控制面与数据面分离。
+>
+> #### ▶ **典型应用场景**
+>
+> ```mermaid
+> graph LR
+>     DPDK_App -->|高吞吐数据| User_Space
+>     DPDK_App -->|管理报文| KNI
+>     KNI --> Kernel_Network_Stack
+>     Kernel_Network_Stack -->|配置/监控| Network_Tools(ifconfig/ping/iptables)
+> ```
+>
+> 
+>
+> ------
+>
+> ### **3. 自定义用户态协议栈的价值**
+>
+> #### ▶ **与KNI的本质差异**
+>
+> |   **特性**   |        **KNI**        | **自定义协议栈 (如ntytcp/mtcp)** |
+> | :----------: | :-------------------: | :------------------------------: |
+> |     定位     |    内核协议栈代理     |        完全替代内核协议栈        |
+> | 数据处理路径 |  用户态→内核态→应用   |         纯用户态闭环处理         |
+> |     性能     | 受限于内核调度/锁争用 |     无上下文切换，纳秒级延迟     |
+> |  功能灵活性  |     依赖内核能力      |    可定制拥塞控制、内存池策略    |
+>
+> #### ▶ **不可替代性的根源**
+>
+> - **极致性能需求**
+>   内核协议栈单核处理能力通常<1Mpps，而​**​自定义栈+DPDK可达10Mpps+​**​（图中Redis/Nginx等应用直接对接DPDK）。
+> - **协议创新需求**
+>   例如金融交易场景需​**​微秒级延迟​**​，可删减TCP冗余机制（如mtcp精简ACK处理）。
+> - **资源控制粒度**
+>   用户态协议栈可精确绑定CPU核心、独占缓存，避免内核调度抖动（图中hugepage支撑此特性）。
+>
+> ------
+>
+> ### **4. DPDK架构本质图解**
+>
+> ```mermaid
+> flowchart LR
+>     网卡 -->|DMA| driver
+>     driver -->|UIO/VFIO| DPDK
+>     DPDK -->|hugepage内存池| App(Redis/Nginx)
+>     DPDK -->|KNI| Kernel_Stack
+>     DPDK -->|自定义协议栈| User_Space_Stack
+>     User_Space_Stack --> App
+>     Kernel_Stack -->|POSIX API| Legacy_App
+> ```
+>
+> 
+
+
+
+
+
+---
+
+
+
+### 三、用dpdk实现收到数据（UDP）
+
+> ![image-20250708164700827](note/image-20250708164700827.png)
+>
+> 1. 创建以恶搞ustack.c文件-->同时在其中构建main函数
+> 2. 然后复制粘贴example中的Makefile文件到同样的目录下
+> 3. 直接make
+> 4. 在./build/ustack中直接运行
+
+
+
+#### 1. 简单实现初始化
+
+```c
+#include <stdio.h>
+
+#include <stdlib.h>
+#include <rte_eal.h>
+
+int main(int argc, char *argv[])
+{
+    if (rte_eal_init(argc, argv) < 0)
+    {
+        rte_exit(EXIT_FAILURE, "Error with EAL init\n");
+    }
+
+    printf("hello dpdk!\n");
+}
+```
+
+
+
+![image-20250708171200059](note/image-20250708171200059.png)
+
+
+
+#### 2. 查看dpdk绑定网口数量
+
+```c
+#include <stdio.h>
+
+#include <stdlib.h>
+#include <rte_eal.h>
+
+static int ustack_init_port(void)
+{
+    uint16_t nb_sys_ports = rte_eth_dev_count_avail();
+    printf("Number of available ports: %u\n", nb_sys_ports);
+    return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    if (rte_eal_init(argc, argv) < 0)
+    {
+        rte_exit(EXIT_FAILURE, "Error with EAL init\n");
+    }
+
+    ustack_init_port();
+
+    printf("hello dpdk!\n");
+}
+```
+
+
+
+> 简单来说就是这个函数`rte_eth_dev_count_avail()`会直接返回我们dpdk绑定的网口数量。
+>
+> 
+
+
+
+> **tips：**
+>
+> 1. 我们在dpdk中会定义一个mbuf，这跟我们kernel内核中的sk_buf实际上是一样的作用。
+>    这边用`struct *rte_mempoll* *mbuf_poll = rte_pktmbuf_pool_create();`来进行创建
+> 2. 这个ringbuf是我们的内核中的数据地址，这个需要理解一下
+
+
+
+
+
+```c
+/* 
+ * DPDK 网络数据包处理程序
+ * 
+ * 核心架构比喻：
+ * 数据包处理系统 = 自来水处理厂
+ * 
+ * 水库(mbuf_pool) -> 水泵(网卡端口) -> 水管(Ring Buffer) -> 过滤器(数据处理) -> 输出
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <rte_eal.h>        // DPDK 环境抽象层
+#include <rte_ethdev.h>     // DPDK 以太网设备接口
+#include <arpa/inet.h>      // 网络地址转换
+
+// 全局端口ID - 默认使用0号网卡端口 (相当于指定使用哪条河流作为水源)
+int global_portid = 0;
+
+// 水库配置参数
+#define NUM_MBUFS 4096     // 水库总容量 (可容纳的包容器数量)
+#define BURST_SIZE 128     // 每次最多取出的包数量 (每次抽水的量)
+
+// 端口默认配置 (水泵的基本设置)
+static const struct rte_eth_conf port_conf_default = {
+    .rxmode = {.max_rx_pkt_len = RTE_ETHER_MAX_LEN} // 最大包长=标准以太网包大小
+};
+
+/**
+ * @brief 初始化网络端口 (相当于建立水泵站)
+ * 
+ * @param mbuf_pool 水库(包内存池)
+ * @return int 操作状态
+ */
+static int ustack_init_port(struct rte_mempool *mbuf_pool)
+{
+    // 1. 检查可用"水源"情况
+    uint16_t nb_sys_ports = rte_eth_dev_count_avail();
+    printf("可用的端口数量: %u\n", nb_sys_ports);
+    if (nb_sys_ports == 0) {
+        rte_exit(EXIT_FAILURE, "没有可用端口!\n");
+    }
+
+    // 2. 配置水泵接口
+    const int num_rx_queues = 1;   // 设置1条进水管道
+    const int num_tx_queues = 0;   // 不需要出水管道
+    rte_eth_dev_configure(global_portid, num_rx_queues, num_tx_queues, &port_conf_default);
+
+    // 3. 设置进水管道(RX队列) - 连接水库和水泵
+    int ret = rte_eth_rx_queue_setup(
+        global_portid,      // 水泵ID
+        0,                  // 进水管道编号(队列索引)
+        128,                // 管道容量(Ring Buffer大小)
+        rte_eth_dev_socket_id(global_portid), // NUMA节点
+        NULL,               // 队列配置(使用默认)
+        mbuf_pool          // 水库对象
+    );
+
+    if (ret < 0) {
+        rte_exit(EXIT_FAILURE, "设置端口%u的接收队列失败\n", global_portid);
+    }
+
+    // 4. 启动水泵
+    ret = rte_eth_dev_start(global_portid);
+    if (ret < 0) {
+        rte_exit(EXIT_FAILURE, "启动端口%u失败\n", global_portid);
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 主函数 - 构建整个水利系统
+ */
+int main(int argc, char *argv[])
+{
+    // ==== 第一阶段：构建水处理厂基础 ====
+    
+    // 1. 初始化DPDK环境 - 相当于建设工厂基础设施
+    if (rte_eal_init(argc, argv) < 0) {
+        rte_exit(EXIT_FAILURE, "EAL初始化失败\n");
+    }
+
+    // 2. 创建内存池(水库) 
+    //  参数详解:
+    //  "mbuf poll" - 水库名称
+    //  NUM_MBUFS   - 水库总容量(可存放4096个水桶)
+    //  0           - 缓存区个数(保留)
+    //  0           - 每个缓存区额外空间
+    //  RTE_MBUF_DEFAULT_BUF_SIZE - 每个水桶容量(标准以太网帧大小+额外空间)
+    //  rte_socket_id() - 放在哪个NUMA节点上
+    struct rte_mempool *mbuf_pool = 
+        rte_pktmbuf_pool_create("mbuf poll", NUM_MBUFS, 0, 0, 
+                               RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    
+    if (mbuf_pool == NULL) {
+        rte_exit(EXIT_FAILURE, "创建水库失败!\n");
+    }
+
+    // ==== 第二阶段：建设水泵系统 ====
+    ustack_init_port(mbuf_pool);
+    
+    // ==== 第三阶段：水处理主循环 ====
+    while (1) {
+        // 准备接水的空桶组(最多准备128个空桶)
+        struct rte_mbuf *mbufs[BURST_SIZE] = {0};
+        
+        // 从水泵抽水(一次最多取128桶)
+        uint16_t num_recved = rte_eth_rx_burst(
+            global_portid,  // 使用哪个水泵
+            0,             // 使用哪条管道(接收队列)
+            mbufs,         // 装水的桶数组
+            BURST_SIZE     // 最大取桶数
+        );
+        
+        if (num_recved > BURST_SIZE) {
+            rte_exit(EXIT_FAILURE, "接收错误: 比预期更多的水!\n");
+        }
+        
+        // 处理每一桶水
+        for (int i = 0; i < num_recved; i++) {
+            // 查看桶上的标签(以太网头部)
+            struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr *);
+            
+            // 检查是否是"纯净水"(IPv4包)
+            if (ethhdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+                // 不是纯净水，倒掉并回收桶(代码中缺少释放操作!)
+                continue;
+            }
+            
+            // 分析水质详情(解析IP头)
+            struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(
+                mbufs[i], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+            
+            // 检查是否是"饮用水"(UDP协议)
+            if (iphdr->next_proto_id == IPPROTO_UDP) {
+                // 获取UDP细节(解析UDP头)
+                struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *)(iphdr + 1);
+                
+                // 饮用! (输出UDP负载内容)
+                printf("接收到UDP数据: %s\n", (char *)(udphdr + 1));
+            }
+            
+            // 重要: 使用完必须放回水库! (代码中缺少释放操作!)
+        }
+    }
+
+    // 以下代码实际不会执行到(因有无限循环)
+    printf("hello dpdk!\n");
+}
+```
+
+最终代码的构成像这样
+
+编译成功了但是还是不能运行
+
+![image-20250709022555140](note/image-20250709022555140.png)
+
+修改网卡为NAT而不是桥接
+
+同时代码有两个bug
+
+> ### 1. **UDP数据定位错误**
+>
+> - **代码一**：
+>
+>   ```c
+>   struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *)(iphdr + 1);
+>   printf("Received UDP: %s", (char *)udphdr + 1); // 错误：udphdr+1 指向错误位置
+>   ```
+>
+>   错误地将 `udphdr + 1` 作为数据起始位置。这实际跳过了整个UDP头（8字节），指向了错误的内存地址。
+>
+> - **正确方式（代码二）**：
+>
+>   ```c
+>   printf("udp : %s\n", (char*)(udphdr+1)); // udcphdr+1 正确解析为数据区
+>   ```
+>
+>   在代码二中，`(char*)(udphdr+1)` 正确指向UDP头之后的数据区。
+>
+> ### 2. **缺少换行符导致输出缓冲**
+>
+> - **代码一**：`printf("Received UDP: %s", ...)` 缺少换行符 `\n`，导致输出被缓冲，不会立即刷新到终端。
+> - **代码二**：`printf("udp : %s\n", ...)` 包含 `\n`，强制刷新输出缓冲区。
+
+
+
+
+
+
+
+## 2.4.2 tcp的原理实现
+
+#### 一、上章的结果复现
+
+
+
+![image-20250709154303193](note/image-20250709154303193.png)
+
+
+
+> 运行环境和编译环境两者是不相同的
+>
+> **简单来说就是：**
+>
+> 1. 编译环境——DPDKset中的39
+> 2. 运行环境——DPDKset中的43-->49
+
+
+
+> **本节课目标**
+>
+> 1. dpdk能够发送数据
+>    echo udp
+> 2. tcp
+>
+> **最终要实现：**
+>
+> 发包的工具, 可以检测ddos攻击，或者进行ddos攻击      
+>
+> 可以写道简历里面的自我评价
+
+
+
+---
+
+
+
+#### 二、添加发送功能
+
+```c
+if (iphdr->next_proto_id == IPPROTO_UDP)
+    {
+        struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *)(iphdr + 1);
+
+        rte_eth_tx_burst(global_portid, 0, &mbufs[i], 1);
+
+        printf("Received UDP: %s\n", (char *)(udphdr + 1));
+    }
+```
+
+如果只是单独引入一个tx的语句的话，我们会发现，只要一接收发送来的数据就会报错g掉。
+
+![image-20250709160741404](note/image-20250709160741404.png)
+
+
+
+在这边需要增加初始化：
+
+```c
+#if ENABLE_SEND
+    const int num_tx_queues = 1;
+#else
+
+-----
+#if ENABLE_SEND
+    // Setup TX queue
+    struct rte_eth_txconf txq_conf = dev_info.default_txconf;
+    txq_conf.offloads = port_conf_default.rxmode.offloads;
+
+    ret = rte_eth_tx_queue_setup(global_portid, 0, 512, rte_eth_dev_socket_id(global_portid),  &txq_conf);
+    if (ret < 0)
+    {
+        rte_exit(EXIT_FAILURE, "Error setting up TX queue for port %u\n", global_portid);
+    }
+#endif
+
+-----
+
+#if ENABLE_SEND
+                rte_eth_tx_burst(global_portid, 0, &mbufs[i], 1);
+#endif
+```
+
+
+
+
+
+
+
+#### 三、添加协议功能
+
+
+
+> 这个时候我们会发现：
+>
+> 运行发送没有报错了，但是还是收不到数据！！！
+>
+> ---
+>
+> 这边就设计到一件事情！！！
+>
+> 我们的数据不是发了就行的（跟快递一样不是寄出去就行了的），必须设置好对应的地址收件人信息等，才能被接收到！！
+>
+> **==所以我们要来构建必要的数据发送协议==**
+
+
+
+> ![image-20250709172052394](note/image-20250709172052394.png)
+>
+> **Q1：我们二极受和发送的过程中CRC是否需要交换**
+>
+> **A1: 下面这些都需要修改**
+>
+> ![image-20250709172312738](note/image-20250709172312738.png)
+
+
+
+进行发送接收的mac  ip  port的获取:
+
+```c
+#if ENABLE_SEND
+                rte_memcpy(global_smac, ethhdr->d_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+                rte_memcpy(global_dmac, ethhdr->s_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+                
+                rte_memcpy(&global_sip, &iphdr->dst_addr, sizeof(uint32_t));
+                rte_memcpy(&global_dip, &iphdr->src_addr, sizeof(uint32_t));
+
+                rte_memcpy(&global_sport, &udphdr->dst_port, sizeof(uint16_t));
+                rte_memcpy(&global_dport, &udphdr->src_port, sizeof(uint16_t));
+                
+                // 小技巧：点分十进制转换
+                // inet_ntoa() 函数将网络地址转换为点分十进制
+                // 这边的打印是为了验证接收的包是否正确
+                struct in_addr src_addr, dst_addr;
+                src_addr.s_addr = iphdr->src_addr;
+                dst_addr.s_addr = iphdr->dst_addr;
+                printf("Received UDP packet from %s:%d (sip) to %s:%d (dip)\n",
+                       inet_ntoa(src_addr), ntohs(udphdr->src_port),
+                       inet_ntoa(dst_addr), ntohs(udphdr->dst_port));
+                rte_eth_tx_burst(global_portid, 0, &mbufs[i], 1);
+#endif
+```
+
+> #### **这段代码是有bug的！！**
+>
+> 1. **工作流程：**
+>    - 在**同一个 `printf` 语句中**连续调用 `inet_ntoa(src_addr)` 和 `inet_ntoa(dst_addr)`。
+>    - `printf` 的参数求值顺序可能是任意的（通常从右向左），但无论顺序如何，问题本质相同。
+> 2. **问题根源：`inet_ntoa` 的静态缓冲区**
+>    - `inet_ntoa` 返回一个指向**静态内部缓冲区**的指针（不是线程安全）。
+>    - 多次调用会覆盖该缓冲区！例如：
+>      - 若先计算 `inet_ntoa(src_addr)`，返回指向字符串 `"192.168.1.1"` 的指针 `ptr`。
+>      - 接着计算 `inet_ntoa(dst_addr)`，将缓冲区覆盖为 `"10.0.0.1"`，并返回相同的指针 `ptr`。
+>    - 最终 `printf` 打印时，两个 `%s` 都会从同一个指针 `ptr` 读取数据（值为最后一次调用的结果），导致 **两个 IP 显示相同**（都是目的 IP）。
+
+
+
+> ### bug的解决方案有两种！！
+>
+> 1. **使用线程安全函数 `inet_ntop`**
+>
+>    ```c
+>    char src_str[INET_ADDRSTRLEN], dst_str[INET_ADDRSTRLEN];
+>    inet_ntop(AF_INET, &src_addr, src_str, INET_ADDRSTRLEN);
+>    inet_ntop(AF_INET, &dst_addr, dst_str, INET_ADDRSTRLEN);
+>    printf("Received UDP packet from %s:%d (sip) to %s:%d (dip)\n",
+>           src_str, ntohs(udphdr->src_port),
+>           dst_str, ntohs(udphdr->dst_port));
+>    ```
+>
+>    - `cinet_ntop` 要求调用者提供缓冲区，避免静态资源冲突。
+>
+> 2. **拆分打印语句（如第一段代码）**
+>    确保两次 `inet_ntoa` 调用不在同一语句中，避免缓冲区覆盖。
+>
+>    ```c
+>    struct in_addr addr;
+>    addr.s_addr = iphdr->src_addr;
+>    printf("Received UDP packet from %s:%d (sip) to ",inet_ntoa(addr), ntohs(udphdr->src_port));
+>    addr.s_addr = iphdr->dst_addr;
+>    printf("%s:%d (dip)\n", inet_ntoa(addr), ntohs(udphdr->dst_port));
+>    ```
+>
+>    ![image-20250709224143003](note/image-20250709224143003.png)
+
+
+
+
+
+> **至于为什么我们没有接收bind为什么还能看到端口呢**
+>
+> 因为我们是直接从网卡拿数据，所以说，我们的所有走网卡走的数据都可以拿到。
+
+
+
+
+
+---
+
+
+
+#### 四、实现ustack_encode_udp_pkt()
+
+![image-20250709224947848](note/image-20250709224947848.png)
+
+
+
+1. **组织以太网头**
+
+```c
+// 首先组织以太网头(ether)
+struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
+rte_memcpy(eth->d_addr.addr_bytes, global_dmac, RTE_ETHER_ADDR_LEN);
+rte_memcpy(eth->s_addr.addr_bytes, global_smac, RTE_ETHER_ADDR_LEN);
+eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+```
+
+这个地方为什么要强转呢？就是为了将我们的以太网头转到msg那个指针头去
+
+![image-20250709225842502](note/image-20250709225842502.png)
+
+
+
+2. **组织IP头**
+
+```c
+// 接着组织ip头
+struct rte_ipv4_hdr *ip = (struct rte_ip_hdr *)(eth + 1);
+// [equal]struct rte_ipv4_hdr *ip = msg + sizeof(struct rte_ether_hdr);
+ip->version_ihl = 0x45;
+ip->type_of_service = 0;
+ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
+ip->packet_id = 0;
+ip->fragment_offset = 0;
+ip->time_to_live = 64;
+ip->next_proto_id = IPPROTO_TCP;
+ip->src_addr = global_sip;
+ip->dst_addr = global_dip;
+
+ip->hdr_checksum = 0;
+ip->hdr_checksum = rte_ipv4_cksum(ip);
+```
+
+
+
+> **一些问题的讲解：**
+>
+> **Q1：这边的`ip->version_ihl = 0x45;`是这么定义的**
+>
+> 1. 高4位：版本号（Version）
+>    - IPv4 固定为 `4`（二进制 `0100`）
+> 2. 低4位：头部长度（IHL - Internet Header Length）
+>    - 表示IP头部有多少个 **4字节(32位)** 单位
+>    - 最小值为 `5`（表示20字节头部，无选项）
+>
+> ---
+>
+> **Q2: 位标识这些使用情况**
+>
+> 当我们发送包的大小（5000）超过我们的系统MTU设置的传输上限（1500），这样的话，我们就要进行分片的操作。
+>
+> ---
+>
+> **Q3：校验值小技巧**
+>
+> ```c
+> ip->hdr_checksum = 0;
+> ip->hdr_checksum = rte_ipv4_cksum(ip);
+> ```
+>
+> 这边如果不对checksum进行初始化的话，在下面的计算中，就会因为脏数的计算产生错误结果。
+
+
+
+---
+
+3. **组织UDP头**
+
+```
+// 组织UDP头
+    //1 udp header
+
+	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(ip + 1);
+	udp->src_port = global_sport;
+	udp->dst_port = global_dport;
+	uint16_t udplen = total_len - sizeof(struct rte_ether_hdr) - sizeof(struct rte_ipv4_hdr);
+	udp->dgram_len = htons(udplen); 
+
+    // 将数据拷贝到UDP头后面
+	rte_memcpy((uint8_t*)(udp+1), data, udplen - sizeof(struct rte_udp_hdr));
+	udp->dgram_cksum = 0;
+	udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
+```
+
+
+
+> ==强调一下网络字节序问题！！！！==
+>
+> `ip->total_length = htons(*total_len* - sizeof(struct *rte_ether_hdr*));`
+
+
+
+
+
+![image-20250710021247299](note/image-20250710021247299.png)
+
+
+
+#### 五、用dpdk实现（TCP）
+
+1. 接收部分
+
+```c
+else if (iphdr->next_proto_id == IPPROTO_TCP)
+{
+    struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(iphdr + 1);
+
+    struct in_addr src_addr, dst_addr;
+    src_addr.s_addr = iphdr->src_addr;
+    dst_addr.s_addr = iphdr->dst_addr;
+    char src_str[INET_ADDRSTRLEN], dst_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &src_addr, src_str, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &dst_addr, dst_str, INET_ADDRSTRLEN);
+    printf("Received TCP packet from %s:%d (sip) to %s:%d (dip)\n",
+           src_str, ntohs(tcphdr->src_port),
+           dst_str, ntohs(tcphdr->dst_port));
+}
+```
+
+
+
+![image-20250710023406902](note/image-20250710023406902.png)
+
+
+
+---
+
+
+
+2. 组织发包端口
+
+```c
+int ustack_encode_tcp_pkt(uint8_t *msg, uint16_t total_len) {
+
+	//1 ether header
+
+	struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
+	rte_memcpy(eth->d_addr.addr_bytes, global_dmac, RTE_ETHER_ADDR_LEN);
+	rte_memcpy(eth->s_addr.addr_bytes, global_smac, RTE_ETHER_ADDR_LEN);
+	eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+
+	//1 ip header
+	struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr*)(eth + 1); //msg + sizeof(struct rte_ether_hdr);
+	ip->version_ihl = 0x45;
+	ip->type_of_service = 0;
+	ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
+	ip->packet_id = 0;
+	ip->fragment_offset = 0;
+	ip->time_to_live = 64;
+	ip->next_proto_id = IPPROTO_TCP;
+	ip->src_addr = global_sip;
+	ip->dst_addr = global_dip;
+
+	ip->hdr_checksum = 0;
+	ip->hdr_checksum = rte_ipv4_cksum(ip);
+
+	//1 tcp header
+
+	struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr *)(ip + 1);
+	tcp->src_port = global_sport;
+	tcp->dst_port = global_dport;
+	tcp->sent_seq = htonl(12345); // 这里可以设置为任意值，通常是初始序列号
+	tcp->recv_ack = 0x0;
+	tcp->data_off = 0x50;
+	tcp->tcp_flags = 0x1 << 1; // SYN flag
+	
+	tcp->rx_win = htons(4096);  // rmem
+	tcp->cksum = 0;
+	tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+
+	
+	return 0;
+}
+```
+
+
+
+
+
+
+
+> TCP为什么不带长度：
+>
+> #### TCP 的流式传输特性
+>
+> - UDP 是面向数据报的（datagram）：每个包自包含且独立
+> - TCP 是面向流的（stream）：数据被视为连续字节流，分段长度由接收方窗口、拥塞控制等动态决定
+
+
+
+
+
+实现了最后的发送
+
+![image-20250710025340019](note/image-20250710025340019.png)
+
+
+
+
+
+---
+
+
+
+#### 六、课后作业
+
+> 实现一个发包工具
+>
+> ./pktgen -u -dmac 11:22:33:44:55 -sip 192.168.2.7 -dip 192.168.2.3 -sport 2000 -dport 8000
+
+
+
+
+
+
+
+---
+
+
+
+## 2.4.3 tcp/ip定时器与滑动窗口
+
+> 本次课任务：
+>
+> 1. tcp三次握手的实现
+> 2. tcp原理，--> 传输 滑动窗口，慢启动，拥塞控制，超时重传
+
+
+
+---
+
+
+
+### 一、三次握手
+
+首先我们的第一个任务，实现tcp的三次握手。
+
+![image-20250710214306330](note/image-20250710214306330.png)
+
+
+
+当我们尝试连接的时候，有试图三次握手，抓包和dpdk都可以看到
+
+![image-20250710214843757](note/image-20250710214843757.png)
+
+
+
+![image-20250710214857096](note/image-20250710214857096.png)
+
+
+
+![image-20250710215401789](note/image-20250710215401789.png)
+
+
+
+
+
+我们现在发出去的包如上，这显然不符合三次握手的要求。
+
+![image-20250710215449862](note/image-20250710215449862.png)
+
+> 再次分析一下三次握手的原理
+>
+> 
+>
+> ![image-20250710215600517](note/image-20250710215600517.png)
+>
+> ![image-20250710215617041](note/image-20250710215617041.png)
+
+
+
+### 二、【BUG】字节序转化
+
+> 简单设置之后的bug——连接不上：
+>
+> 这个地方因为！！！！需要修改小端大端的问题，保证网络字节序！！！！
+>
+> ![image-20250711164403391](note/image-20250711164403391.png)
+>
+> ![image-20250712003333917](note/image-20250712003333917.png)
+
+
+
+---
+
+
+
+### 三、【BUG】衔接后dpdk自动关闭
+
+![image-20250712004209970](note/image-20250712004209970.png)
+
+> 这个地方是因为ack三次握手的最后一次一直在循环的发送
+>
+> **Q：三次握手最后一次 ack包，持续发送。的原因是什么？**
+
+
+
+> bug原因：
+>
+> ==当我们接收到一个中间包的时候，最后的这个也一直发！！！==
+>
+> ![image-20250713015805645](note/image-20250713015805645.png)
+>
+> 引入状态机的问题：
+>
+> 就是不能发一样的包：listen -->syn_sent --> syn_rcvd
+>
+> 
+>
+> ![image-20250713015915450](note/image-20250713015915450.png)
+
+
+
+==最后状态机实现了！！！==
+
+![image-20250713030904836](note/image-20250713030904836.png)
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <rte_eal.h>       // DPDK环境抽象层
+#include <rte_ethdev.h>    // DPDK以太网设备接口
+#include <rte_ip.h>        // IP协议相关定义
+#include <arpa/inet.h>     // 网络地址转换函数
+
+// 全局配置变量
+int global_portid = 0; // 全局端口ID，可设置为任意有效端口编号
+
+// 网络缓冲区配置
+#define NUM_MBUFS 4096    // 内存池中mbuf数量
+#define BURST_SIZE 128     // 单次收发包的最大数量
+#define ENABLE_SEND 1      // 使能发送功能开关
+#define TCP_INIT_WINDOWS 14600 // TCP初始窗口大小
+
+#if ENABLE_SEND
+// 源/目的MAC地址（相对于发送方向）
+uint8_t global_smac[RTE_ETHER_ADDR_LEN]; // 源MAC地址
+uint8_t global_dmac[RTE_ETHER_ADDR_LEN]; // 目的MAC地址
+
+// IP地址和端口号
+uint32_t global_sip;  // 源IP地址（网络字节序）
+uint32_t global_dip;  // 目的IP地址（网络字节序）
+uint16_t global_sport; // 源端口号（主机字节序）
+uint16_t global_dport; // 目的端口号（主机字节序）
+#endif
+
+// TCP控制字段
+uint8_t global_flags;   // 接收到的TCP标志位
+uint32_t global_seqnum; // 接收到的TCP序列号
+uint32_t global_acknum; // 接收到的TCP确认号
+
+// TCP状态机定义
+typedef enum __USTACK_TCP_STATUS {
+    USTACK_TCP_STATUS_CLOSED = 0,
+    USTACK_TCP_STATUS_LISTEN,
+    USTACK_TCP_STATUS_SYN_RCVD,
+    USTACK_TCP_STATUS_SYN_SENT,
+    USTACK_TCP_STATUS_ESTABLISHED,
+    USTACK_TCP_STATUS_FIN_WAIT_1,
+    USTACK_TCP_STATUS_FIN_WAIT_2,
+    USTACK_TCP_STATUS_CLOSING,
+    USTACK_TCP_STATUS_TIMEWAIT,
+    USTACK_TCP_STATUS_CLOSE_WAIT,
+    USTACK_TCP_STATUS_LAST_ACK
+} USTACK_TCP_STATUS;
+
+uint8_t tcp_status = USTACK_TCP_STATUS_LISTEN; // 初始TCP状态为监听
+
+// 函数前置声明
+int ustack_encode_udp_pkt(uint8_t *msg, uint8_t *data, uint16_t total_len);
+int ustack_encode_tcp_pkt(uint8_t *msg, uint16_t total_len);
+
+// 默认端口配置（只设置最大接收包长度）
+static const struct rte_eth_conf port_conf_default = {
+    .rxmode = {.max_rx_pkt_len = RTE_ETHER_MAX_LEN}
+};
+
+/**
+ * @brief 初始化指定网卡端口
+ * @param mbuf_pool 预分配的内存池
+ * @return 成功返回0，失败退出程序
+ */
+static int ustack_init_port(struct rte_mempool *mbuf_pool)
+{
+    // 查询可用端口数量
+    uint16_t nb_sys_ports = rte_eth_dev_count_avail();
+    printf("可用端口数量: %u\n", nb_sys_ports);
+    if (nb_sys_ports == 0) {
+        rte_exit(EXIT_FAILURE, "没有可用端口!\n");
+    }
+
+    // 获取网卡设备信息
+    struct rte_eth_dev_info dev_info;
+    rte_eth_dev_info_get(global_portid, &dev_info);
+
+    // 配置队列数量（根据发送功能开关决定TX队列）
+    const int num_rx_queues = 1; // RX队列数量
+#if ENABLE_SEND
+    const int num_tx_queues = 1; // TX队列数量
+#else
+    const int num_tx_queues = 0;
+#endif
+
+    // 配置网卡端口
+    rte_eth_dev_configure(global_portid, num_rx_queues, num_tx_queues, &port_conf_default);
+
+    // 设置RX队列
+    int ret = rte_eth_rx_queue_setup(global_portid, 0, 128, 
+                                    rte_eth_dev_socket_id(global_portid), 
+                                    NULL, mbuf_pool);
+    if (ret < 0) {
+        rte_exit(EXIT_FAILURE, "端口%u的RX队列设置失败\n", global_portid);
+    }
+
+#if ENABLE_SEND
+    // 设置TX队列
+    struct rte_eth_txconf txq_conf = dev_info.default_txconf;
+    txq_conf.offloads = port_conf_default.rxmode.offloads;
+    ret = rte_eth_tx_queue_setup(global_portid, 0, 512, 
+                                rte_eth_dev_socket_id(global_portid), 
+                                &txq_conf);
+    if (ret < 0) {
+        rte_exit(EXIT_FAILURE, "端口%u的TX队列设置失败\n", global_portid);
+    }
+#endif
+
+    // 启动网卡端口
+    ret = rte_eth_dev_start(global_portid);
+    if (ret < 0) {
+        rte_exit(EXIT_FAILURE, "启动端口%u失败\n", global_portid);
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 构造UDP数据包
+ * @param msg 缓冲区指针
+ * @param data UDP载荷数据
+ * @param total_len 数据包总长度（包括各层头部）
+ * @return 成功返回0
+ */
+int ustack_encode_udp_pkt(uint8_t *msg, uint8_t *data, uint16_t total_len)
+{
+    // 1. 组装以太网头部
+    struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
+    rte_memcpy(eth->d_addr.addr_bytes, global_dmac, RTE_ETHER_ADDR_LEN); // 目的MAC
+    rte_memcpy(eth->s_addr.addr_bytes, global_smac, RTE_ETHER_ADDR_LEN); // 源MAC
+    eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);  // 设置以太网类型为IPv4
+
+    // 2. 组装IPv4头部
+    struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
+    ip->version_ihl = 0x45;  // IPv4，头部长度20字节
+    ip->type_of_service = 0; // 服务类型（默认）
+    ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr)); // IP包总长
+    ip->packet_id = 0;       // 包标识（未分片）
+    ip->fragment_offset = 0; // 分片偏移（未分片）
+    ip->time_to_live = 64;   // TTL值
+    ip->next_proto_id = IPPROTO_UDP; // 上层协议为UDP
+    ip->src_addr = global_sip; // 源IP（已为网络字节序）
+    ip->dst_addr = global_dip; // 目的IP（已为网络字节序）
+    
+    // 计算IP头部校验和
+    ip->hdr_checksum = 0;
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
+
+    // 3. 组装UDP头部
+    struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(ip + 1);
+    udp->src_port = global_sport;   // 源端口（主机字节序）
+    udp->dst_port = global_dport;   // 目的端口（主机字节序）
+    uint16_t udplen = total_len - sizeof(struct rte_ether_hdr) - sizeof(struct rte_ipv4_hdr);
+    udp->dgram_len = htons(udplen); // UDP数据报总长
+
+    // 4. 填充UDP载荷数据
+    rte_memcpy((uint8_t *)(udp + 1), data, udplen - sizeof(struct rte_udp_hdr));
+    
+    // 计算UDP校验和（包括伪头部）
+    udp->dgram_cksum = 0;
+    udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
+
+    return 0;
+}
+
+/**
+ * @brief 构造TCP数据包（仅SYN+ACK响应）
+ * @param msg 缓冲区指针
+ * @param total_len 数据包总长度
+ * @return 成功返回0
+ */
+int ustack_encode_tcp_pkt(uint8_t *msg, uint16_t total_len)
+{
+    // 1. 组装以太网头部
+    struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
+    rte_memcpy(eth->d_addr.addr_bytes, global_dmac, RTE_ETHER_ADDR_LEN); // 目的MAC
+    rte_memcpy(eth->s_addr.addr_bytes, global_smac, RTE_ETHER_ADDR_LEN); // 源MAC
+    eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);  // 设置以太网类型为IPv4
+
+    // 2. 组装IPv4头部
+    struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
+    ip->version_ihl = 0x45;  // IPv4，头部长度20字节
+    ip->type_of_service = 0; // 服务类型（默认）
+    ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr)); // IP包总长
+    ip->packet_id = 0;       // 包标识（未分片）
+    ip->fragment_offset = 0; // 分片偏移（未分片）
+    ip->time_to_live = 64;   // TTL值
+    ip->next_proto_id = IPPROTO_TCP; // 上层协议为TCP
+    ip->src_addr = global_sip;      // 源IP
+    ip->dst_addr = global_dip;      // 目的IP
+    
+    // 计算IP头部校验和
+    ip->hdr_checksum = 0;
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
+
+    // 3. 组装TCP头部（SYN+ACK响应）
+    struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr *)(ip + 1);
+    tcp->src_port = global_sport;       // 源端口
+    tcp->dst_port = global_dport;       // 目的端口
+    tcp->sent_seq = htonl(12345);        // 发送序列号（固定值）
+    tcp->recv_ack = htonl(global_seqnum + 1); // 确认号 = 接收序列号+1
+    tcp->data_off = 0x50;                // 数据偏移（5 * 4=20字节）
+    tcp->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG; // SYN+ACK标志位
+    tcp->rx_win = htons(TCP_INIT_WINDOWS); // 接收窗口大小
+    
+    // 计算TCP校验和（包括伪头部）
+    tcp->cksum = 0;
+    tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+
+    return 0;
+}
+
+/**
+ * @brief 主函数（DPDK程序入口）
+ * @param argc 参数个数
+ * @param argv 参数列表
+ * @return 程序退出状态
+ */
+int main(int argc, char *argv[])
+{
+    // 1. 初始化DPDK环境
+    if (rte_eal_init(argc, argv) < 0) {
+        rte_exit(EXIT_FAILURE, "EAL初始化失败\n");
+    }
+
+    // 2. 创建内存池
+    struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create(
+        "mbuf poll", NUM_MBUFS, 0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if (mbuf_pool == NULL) {
+        rte_exit(EXIT_FAILURE, "内存池创建失败!\n");
+    }
+
+    // 3. 初始化网卡端口
+    ustack_init_port(mbuf_pool);
+
+    // 4. 主处理循环
+    while (1) {
+        struct rte_mbuf *mbufs[BURST_SIZE] = {0}; // 接收缓冲区
+        
+        // 接收数据包（一次最多BURST_SIZE个）
+        uint16_t num_recved = rte_eth_rx_burst(global_portid, 0, mbufs, BURST_SIZE);
+        if (num_recved > BURST_SIZE) {
+            rte_exit(EXIT_FAILURE, "接收错误: 超出突发大小!\n");
+        }
+
+        // 处理每个收到的数据包
+        for (int i = 0; i < num_recved; i++) {
+            struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr *);
+            
+            // 仅处理IPv4数据包
+            if (ethhdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+                continue; // 跳过非IPv4包
+            }
+            
+            // 解析IP头部
+            struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(
+                mbufs[i], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+            
+            // 处理UDP协议
+            if (iphdr->next_proto_id == IPPROTO_UDP) {
+                struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *)(iphdr + 1);
+                
+                // 记录反转发包需要的五元组信息（源变目的，目的变源）
+#if ENABLE_SEND
+                rte_memcpy(global_smac, ethhdr->d_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+                rte_memcpy(global_dmac, ethhdr->s_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+                rte_memcpy(&global_sip, &iphdr->dst_addr, sizeof(uint32_t));
+                rte_memcpy(&global_dip, &iphdr->src_addr, sizeof(uint32_t));
+                rte_memcpy(&global_sport, &udphdr->dst_port, sizeof(uint16_t));
+                rte_memcpy(&global_dport, &udphdr->src_port, sizeof(uint16_t));
+#endif
+                
+                // 打印收到的UDP包信息（源IP:PORT -> 目的IP:PORT）
+                struct in_addr src_addr = {.s_addr = iphdr->src_addr};
+                struct in_addr dst_addr = {.s_addr = iphdr->dst_addr};
+                char src_str[INET_ADDRSTRLEN], dst_str[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &src_addr, src_str, INET_ADDRSTRLEN);
+                inet_ntop(AF_INET, &dst_addr, dst_str, INET_ADDRSTRLEN);
+                printf("接收UDP包: %s:%d -> %s:%d\n",
+                       src_str, ntohs(udphdr->src_port),
+                       dst_str, ntohs(udphdr->dst_port));
+                
+                // 启用发送时进行UDP回显
+#if ENABLE_SEND
+                uint16_t length = ntohs(udphdr->dgram_len);
+                uint16_t total_len = length + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+                
+                // 分配发送缓冲区
+                struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
+                if (!mbuf) {
+                    rte_exit(EXIT_FAILURE, "发送mbuf分配失败!\n");
+                }
+                mbuf->pkt_len = total_len;
+                mbuf->data_len = total_len;
+                
+                // 构造并发送回显包
+                uint8_t *msg = rte_pktmbuf_mtod(mbuf, uint8_t *);
+                ustack_encode_udp_pkt(msg, (uint8_t *)(udphdr + 1), total_len);
+                rte_eth_tx_burst(global_portid, 0, &mbuf, 1);
+#endif
+                // 打印UDP载荷内容
+                printf("UDP载荷: %s\n\n", (char *)(udphdr + 1));
+            }
+            // 处理TCP协议
+            else if (iphdr->next_proto_id == IPPROTO_TCP) {
+                struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(iphdr + 1);
+                
+                // 保存反转发包需要的五元组信息
+#if ENABLE_SEND
+                rte_memcpy(global_smac, ethhdr->d_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+                rte_memcpy(global_dmac, ethhdr->s_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+                rte_memcpy(&global_sip, &iphdr->dst_addr, sizeof(uint32_t));
+                rte_memcpy(&global_dip, &iphdr->src_addr, sizeof(uint32_t));
+                rte_memcpy(&global_sport, &tcphdr->dst_port, sizeof(uint16_t));
+                rte_memcpy(&global_dport, &tcphdr->src_port, sizeof(uint16_t));
+#endif
+                
+                // 保存关键TCP控制字段
+                global_flags = tcphdr->tcp_flags;
+                global_seqnum = ntohl(tcphdr->sent_seq);
+                global_acknum = ntohl(tcphdr->recv_ack);
+                
+                // 打印收到的TCP包信息
+                struct in_addr src_addr = {.s_addr = iphdr->src_addr};
+                struct in_addr dst_addr = {.s_addr = iphdr->dst_addr};
+                char src_str[INET_ADDRSTRLEN], dst_str[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &src_addr, src_str, INET_ADDRSTRLEN);
+                inet_ntop(AF_INET, &dst_addr, dst_str, INET_ADDRSTRLEN);
+                printf("接收TCP包: %s:%d -> %s:%d \n参数: flags=0x%x, seqnum=%u, acknum=%u\n",
+                       src_str, ntohs(tcphdr->src_port),
+                       dst_str, ntohs(tcphdr->dst_port),
+                       global_flags, global_seqnum, global_acknum);
+                
+                // TCP状态机处理
+                // SYN包处理（监听状态）
+                if (global_flags & RTE_TCP_SYN_FLAG) {
+                    if (tcp_status == USTACK_TCP_STATUS_LISTEN) {
+#if ENABLE_SEND
+                        // 构造SYN+ACK响应包
+                        uint16_t total_len = sizeof(struct rte_tcp_hdr) + 
+                                            sizeof(struct rte_ipv4_hdr) +
+                                            sizeof(struct rte_ether_hdr);
+                        struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
+                        if (!mbuf) {
+                            rte_exit(EXIT_FAILURE, "发送mbuf分配失败!\n");
+                        }
+                        mbuf->pkt_len = total_len;
+                        mbuf->data_len = total_len;
+                        
+                        // 构造并发送SYN+ACK包
+                        uint8_t *msg = rte_pktmbuf_mtod(mbuf, uint8_t *);
+                        ustack_encode_tcp_pkt(msg, total_len);
+                        rte_eth_tx_burst(global_portid, 0, &mbuf, 1);
+#endif
+                        tcp_status = USTACK_TCP_STATUS_SYN_RCVD;
+                        printf("[状态变更] TCP进入SYN_RCVD状态\n");
+                    }
+                }
+                
+                // ACK包处理（SYN_RCVD状态）
+                if ((global_flags & RTE_TCP_ACK_FLAG) && (tcp_status == USTACK_TCP_STATUS_SYN_RCVD)) {
+                    tcp_status = USTACK_TCP_STATUS_ESTABLISHED;
+                    printf("[状态变更] TCP进入ESTABLISHED状态\n");
+                }
+                
+                // PSH包处理（已建立连接）
+                if (global_flags & RTE_TCP_PSH_FLAG) {
+                    printf("收到TCP PSH标志\n");
+                    if (tcp_status == USTACK_TCP_STATUS_ESTABLISHED) {
+                        // 计算TCP头部长度并定位载荷数据
+                        uint8_t hdr_len = (tcphdr->data_off >> 4) * sizeof(uint32_t);
+                        uint8_t *data_start = (uint8_t *)(tcphdr) + hdr_len;
+                        printf("TCP载荷数据: %s\n", data_start);
+                    }
+                }
+                printf("\n");
+            }
+            // 处理其他协议
+            else {
+                printf("收到不支持协议: %d\n\n", iphdr->next_proto_id);
+            }
+            
+            // 释放接收缓冲区（实际应用需添加）
+            rte_pktmbuf_free(mbufs[i]); 
+        }
+    }
+    
+    // 程序不会执行到此（实际应用需添加退出清理逻辑）
+    printf("hello dpdk!\n");
+    return 0;
+}
+```
+
+
+
+
+
+---
+
+### 四、写好的ddos代码
+
+查看tcp.c继续
+
+实际上写法跟我们是类似的
+
+![image-20250713031405531](note/image-20250713031405531.png)
+
+
+
+
+
+---
+
+
+
+### 五、总结
+
+> **tcp, 收发。组织数据。**
+
+> **seqnum：字节序号**
+>
+> 简单来说就是用下个包的字节序号减去前一个，我就知道前一个包的长度是多少！！！！
+>
+> 本质上而言是因为tcp连接是流式的！！！！
+>
+> 
+>
+> **windows窗口限制**
+>
+> 因为存在窗口限制，所以一个包是不可能发送超过2000的！！！
+>
+> 
+>
+> **延迟确认**
+>
+> 这个是指接收方，比如有四个包，124接收到了。这时候接收方就会返回2的acknum，这样的话34就都会重发！！！！
+>
+> 
+>
+> **滑动窗口**
+>
+> 用来形容发送数据的！！！对下面这三部分进行区分！！！：
+>
+> 1. 已发送已确认
+> 2. 已发送未确认
+> 3. 未发送未确认
+
+![image-20250713034539281](note/image-20250713034539281.png)
+
+![image-20250713035647358](note/image-20250713035647358.png)
+
+![image-20250713035809749](note/image-20250713035809749.png)
+
+
+
+
+
+
+
+
+
+---
+
+
+
+
+
+## 2.4.4 手把手设计实现epoll
