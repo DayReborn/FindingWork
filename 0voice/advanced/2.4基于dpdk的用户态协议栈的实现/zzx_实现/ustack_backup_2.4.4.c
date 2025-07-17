@@ -15,8 +15,6 @@
 #include <math.h>
 #include <arpa/inet.h>
 
-#include <sys/epoll.h>
-
 
 #define ENABLE_SEND		1
 #define ENABLE_ARP		1
@@ -38,14 +36,7 @@
 
 #define ENABLE_DDOS_DETECT		0
 
-
-// #define ENABLE_SINGLE_EPOLL			0
-
-
-#define ENABLE_ONCE_MODE 0
-#define ENABLE_THREAD_MODE 0
-#define ENABLE_SYS_EPOLL_MODE 0
-#define ENABLE_DPDK_EPOLL_MODE 1
+#define ENABLE_SINGLE_EPOLL			1
 
 
 #define NUM_MBUFS (4096-1)
@@ -56,10 +47,10 @@
 #define TIMER_RESOLUTION_CYCLES 120000000000ULL // 10ms * 1000 = 10s * 6 
 
 
+#if ENABLE_SINGLE_EPOLL
 
-
-
-#if ENABLE_DPDK_EPOLL_MODE
+#include <sys/queue.h>
+#include "nty_tree.h"
 
 enum EPOLL_EVENTS {
 	EPOLLNONE 	= 0x0000,
@@ -96,6 +87,7 @@ struct epoll_event {
 };
 
 
+
 struct epitem {
 	RB_ENTRY(epitem) rbn;
 	LIST_ENTRY(epitem) rdlink;
@@ -117,8 +109,10 @@ RB_GENERATE_STATIC(_epoll_rb_socket, epitem, rbn, sockfd_cmp);
 
 typedef struct _epoll_rb_socket ep_rb_tree;
 
-
+//
 struct eventpoll {
+	int fd;
+
 	ep_rb_tree rbr;
 	int rbcnt;
 	
@@ -133,12 +127,13 @@ struct eventpoll {
 	pthread_cond_t cond; //block for event
 	pthread_mutex_t cdmtx; //mutex for cond
 	
-}; 
+};
 
 int epoll_event_callback(struct eventpoll *ep, int sockid, uint32_t event);
 int nepoll_create(int size);
 int nepoll_ctl(int epfd, int op, int sockid, struct epoll_event *event);
 int nepoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);
+
 
 
 
@@ -388,6 +383,9 @@ struct ng_tcp_stream { // tcb control block
 struct ng_tcp_table {
 	int count;
 	//struct ng_tcp_stream *listener_set;	//
+#if ENABLE_SINGLE_EPOLL 
+	struct eventpoll *ep; // single epoll
+#endif
 	struct ng_tcp_stream *tcb_set;
 };
 
@@ -912,6 +910,8 @@ static struct ng_tcp_stream *get_accept_tcb(uint16_t dport) {
 	return NULL;
 }
 
+//fd --> udp, tcp, epoll
+
 static void* get_hostinfo_fromfd(int sockfd) {
 
 	struct localhost *host;
@@ -936,6 +936,16 @@ static void* get_hostinfo_fromfd(int sockfd) {
 
 #endif
 
+#if ENABLE_SINGLE_EPOLL
+
+	struct eventpoll *ep = table->ep;
+	if (ep != NULL) {
+		if (ep->fd == sockfd) {
+			return ep;
+		}
+	}
+
+#endif
 	
 	return NULL;
 	
@@ -1623,7 +1633,8 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 #if ENABLE_TCP_APP // ngtcp
 
 
-
+// <sip, dip, sport, dport, proto> --> tcb
+//
 static struct ng_tcp_stream * ng_tcp_stream_search(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) { // proto
 
 	struct ng_tcp_table *table = tcpInstance();
@@ -1668,11 +1679,11 @@ static struct ng_tcp_stream * ng_tcp_stream_create(uint32_t sip, uint32_t dip, u
 	printf("ng_tcp_stream_create\n");
 	//
 	char sbufname[32] = {0};
-	snprintf(sbufname, 32, "sndbuf%x%d", sip, sport);
+	sprintf(sbufname, "sndbuf%x%d", sip, sport);
 	stream->sndbuf = rte_ring_create(sbufname, RING_SIZE, rte_socket_id(), 0);
-
+	
 	char rbufname[32] = {0};
-	snprintf(rbufname, 32, "rcvbuf%x%d", sip, sport);
+	sprintf(rbufname, "bufname%x%d", sip, sport);
 	stream->rcvbuf = rte_ring_create(rbufname, RING_SIZE, rte_socket_id(), 0);
 	
 	// seq num
@@ -1765,6 +1776,12 @@ static int ng_tcp_handle_syn_rcvd(struct ng_tcp_stream *stream, struct rte_tcp_h
 			pthread_cond_signal(&listener->cond);
 			pthread_mutex_unlock(&listener->mutex);
 			
+#if ENABLE_SINGLE_EPOLL
+
+			struct ng_tcp_table *table = tcpInstance();
+			epoll_event_callback(table->ep, listener->fd, EPOLLIN);
+
+#endif
 
 		}
 
@@ -1879,6 +1896,14 @@ static int ng_tcp_handle_established(struct ng_tcp_stream *stream, struct rte_tc
 #else
 
 		ng_tcp_enqueue_recvbuffer(stream, tcphdr, tcplen);
+		
+#if ENABLE_SINGLE_EPOLL
+
+		struct ng_tcp_table *table = tcpInstance();
+		epoll_event_callback(table->ep, stream->fd, EPOLLIN);
+
+#endif
+
 
 #endif
 
@@ -1983,6 +2008,14 @@ static int ng_tcp_handle_established(struct ng_tcp_stream *stream, struct rte_tc
 #else
 
 		ng_tcp_enqueue_recvbuffer(stream, tcphdr, tcphdr->data_off >> 4);
+
+#if ENABLE_SINGLE_EPOLL
+
+		struct ng_tcp_table *table = tcpInstance();
+		epoll_event_callback(table->ep, stream->fd, EPOLLIN);
+
+#endif
+
 
 #endif
 		// send ack ptk
@@ -2243,11 +2276,347 @@ static int ng_tcp_out(struct rte_mempool *mbuf_pool) {
 
 
 
+#if ENABLE_SINGLE_EPOLL
+
+
+// 3 + 1
+
+int epoll_event_callback(struct eventpoll *ep, int sockid, uint32_t event) {
+
+	struct epitem tmp;
+	tmp.sockfd = sockid;
+	struct epitem *epi = RB_FIND(_epoll_rb_socket, &ep->rbr, &tmp);
+	if (!epi) {
+		printf("rbtree not exist\n");
+		return -1;
+	}
+	if (epi->rdy) {
+		epi->event.events |= event;
+		return 1;
+	} 
+
+	printf("epoll_event_callback --> %d\n", epi->sockfd);
+	
+	pthread_spin_lock(&ep->lock);
+	epi->rdy = 1;
+	LIST_INSERT_HEAD(&ep->rdlist, epi, rdlink);
+	ep->rdnum ++;
+	pthread_spin_unlock(&ep->lock);
+
+	pthread_mutex_lock(&ep->cdmtx);
+
+	pthread_cond_signal(&ep->cond);
+	pthread_mutex_unlock(&ep->cdmtx);
+
+}
+
+// eventpoll --> tcp_table->ep;
+int nepoll_create(int size) {
+
+	if (size <= 0) return -1;
+
+	// epfd --> struct eventpoll
+	int epfd = get_fd_frombitmap(); //tcp, udp
+	
+	struct eventpoll *ep = (struct eventpoll*)rte_malloc("eventpoll", sizeof(struct eventpoll), 0);
+	if (!ep) {
+		set_fd_frombitmap(epfd);
+		return -1;
+	}
+
+	struct ng_tcp_table *table = tcpInstance();
+	table->ep = ep;
+	
+	ep->fd = epfd;
+	ep->rbcnt = 0;
+	RB_INIT(&ep->rbr);
+	LIST_INIT(&ep->rdlist);
+
+	if (pthread_mutex_init(&ep->mtx, NULL)) {
+		free(ep);
+		set_fd_frombitmap(epfd);
+		
+		return -2;
+	}
+
+	if (pthread_mutex_init(&ep->cdmtx, NULL)) {
+		pthread_mutex_destroy(&ep->mtx);
+		free(ep);
+		set_fd_frombitmap(epfd);
+		return -2;
+	}
+
+	if (pthread_cond_init(&ep->cond, NULL)) {
+		pthread_mutex_destroy(&ep->cdmtx);
+		pthread_mutex_destroy(&ep->mtx);
+		free(ep);
+		set_fd_frombitmap(epfd);
+		return -2;
+	}
+
+	if (pthread_spin_init(&ep->lock, PTHREAD_PROCESS_SHARED)) {
+		pthread_cond_destroy(&ep->cond);
+		pthread_mutex_destroy(&ep->cdmtx);
+		pthread_mutex_destroy(&ep->mtx);
+		free(ep);
+
+		set_fd_frombitmap(epfd);
+		return -2;
+	}
+
+	return epfd;
+
+}
+
+
+int nepoll_ctl(int epfd, int op, int sockid, struct epoll_event *event) {
+	
+	struct eventpoll *ep = (struct eventpoll*)get_hostinfo_fromfd(epfd);
+	if (!ep || (!event && op != EPOLL_CTL_DEL)) {
+		errno = -EINVAL;
+		return -1;
+	}
+
+	if (op == EPOLL_CTL_ADD) {
+
+		pthread_mutex_lock(&ep->mtx);
+
+		struct epitem tmp;
+		tmp.sockfd = sockid;
+		struct epitem *epi = RB_FIND(_epoll_rb_socket, &ep->rbr, &tmp);
+		if (epi) {
+			pthread_mutex_unlock(&ep->mtx);
+			return -1;
+		}
+
+		epi = (struct epitem*)rte_malloc("epitem", sizeof(struct epitem), 0);
+		if (!epi) {
+			pthread_mutex_unlock(&ep->mtx);
+			rte_errno = -ENOMEM;
+			return -1;
+		}
+		
+		epi->sockfd = sockid;
+		memcpy(&epi->event, event, sizeof(struct epoll_event));
+
+		epi = RB_INSERT(_epoll_rb_socket, &ep->rbr, epi);
+
+		ep->rbcnt ++;
+		
+		pthread_mutex_unlock(&ep->mtx);
+
+	} else if (op == EPOLL_CTL_DEL) {
+
+		pthread_mutex_lock(&ep->mtx);
+
+		struct epitem tmp;
+		tmp.sockfd = sockid;
+		struct epitem *epi = RB_FIND(_epoll_rb_socket, &ep->rbr, &tmp);
+		if (!epi) {
+			
+			pthread_mutex_unlock(&ep->mtx);
+			return -1;
+		}
+		
+		epi = RB_REMOVE(_epoll_rb_socket, &ep->rbr, epi);
+		if (!epi) {
+			
+			pthread_mutex_unlock(&ep->mtx);
+			return -1;
+		}
+
+		ep->rbcnt --;
+		free(epi);
+		
+		pthread_mutex_unlock(&ep->mtx);
+
+	} else if (op == EPOLL_CTL_MOD) {
+
+		struct epitem tmp;
+		tmp.sockfd = sockid;
+		struct epitem *epi = RB_FIND(_epoll_rb_socket, &ep->rbr, &tmp);
+		if (epi) {
+			epi->event.events = event->events;
+			epi->event.events |= EPOLLERR | EPOLLHUP;
+		} else {
+			rte_errno = -ENOENT;
+			return -1;
+		}
+
+	} 
+
+	return 0;
+
+}
+
+
+int nepoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
+
+	
+
+	struct eventpoll *ep = (struct eventpoll*)get_hostinfo_fromfd(epfd);;
+	if (!ep || !events || maxevents <= 0) {
+		rte_errno = -EINVAL;
+		return -1;
+	}
+
+	if (pthread_mutex_lock(&ep->cdmtx)) {
+		if (rte_errno == EDEADLK) {
+			printf("epoll lock blocked\n");
+		}
+	}
+
+	
+	while (ep->rdnum == 0 && timeout != 0) {
+
+		ep->waiting = 1;
+		if (timeout > 0) {
+
+			struct timespec deadline;
+
+			clock_gettime(CLOCK_REALTIME, &deadline);
+			if (timeout >= 1000) {
+				int sec;
+				sec = timeout / 1000;
+				deadline.tv_sec += sec;
+				timeout -= sec * 1000;
+			}
+
+			deadline.tv_nsec += timeout * 1000000;
+
+			if (deadline.tv_nsec >= 1000000000) {
+				deadline.tv_sec++;
+				deadline.tv_nsec -= 1000000000;
+			}
+
+			int ret = pthread_cond_timedwait(&ep->cond, &ep->cdmtx, &deadline);
+			if (ret && ret != ETIMEDOUT) {
+				printf("pthread_cond_timewait\n");
+				
+				pthread_mutex_unlock(&ep->cdmtx);
+				
+				return -1;
+			}
+			timeout = 0;
+		} else if (timeout < 0) {
+
+			int ret = pthread_cond_wait(&ep->cond, &ep->cdmtx);
+			if (ret) {
+				printf("pthread_cond_wait\n");
+				pthread_mutex_unlock(&ep->cdmtx);
+
+				return -1;
+			}
+		}
+		ep->waiting = 0; 
+
+	}
+
+	pthread_mutex_unlock(&ep->cdmtx);
+
+	pthread_spin_lock(&ep->lock);
+
+	int cnt = 0;
+	int num = (ep->rdnum > maxevents ? maxevents : ep->rdnum);
+	int i = 0;
+	
+	while (num != 0 && !LIST_EMPTY(&ep->rdlist)) { //EPOLLET
+
+		struct epitem *epi = LIST_FIRST(&ep->rdlist);
+		LIST_REMOVE(epi, rdlink);
+		epi->rdy = 0;
+
+		memcpy(&events[i++], &epi->event, sizeof(struct epoll_event));
+		
+		num --;
+		cnt ++;
+		ep->rdnum --;
+	}
+	
+	pthread_spin_unlock(&ep->lock);
+
+	return cnt;
+}
+
+#endif
+
 
 
 #define BUFFER_SIZE	1024
 
-#if ENABLE_THREAD_MODE
+
+#if ENABLE_SINGLE_EPOLL
+
+static int tcp_server_entry(__attribute__((unused))  void *arg)  {
+
+	int listenfd = nsocket(AF_INET, SOCK_STREAM, 0);
+	if (listenfd == -1) {
+		return -1;
+	}
+
+	struct sockaddr_in servaddr;
+	memset(&servaddr, 0, sizeof(struct sockaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	servaddr.sin_port = htons(9999);
+	nbind(listenfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	nlisten(listenfd, 10);
+
+	int epfd = nepoll_create(1); // event poll
+
+	struct epoll_event ev, events[128];
+	ev.events = EPOLLIN;
+	ev.data.fd = listenfd;
+	nepoll_ctl(epfd, EPOLL_CTL_ADD, listenfd, &ev);
+	
+	char buff[BUFFER_SIZE] = {0};
+	while(1) {
+
+		int nready = nepoll_wait(epfd, events, 128, 5);
+		if (nready < 0) continue;
+		
+		int i = 0;
+		for (i = 0;i < nready;i ++) {
+
+			if (listenfd == events[i].data.fd) {
+
+				
+				struct sockaddr_in client;
+				socklen_t len = sizeof(client);
+				int connfd = naccept(listenfd, (struct sockaddr*)&client, &len);
+
+				struct epoll_event ev;
+				ev.events = EPOLLIN;
+				ev.data.fd = connfd;
+				nepoll_ctl(epfd, EPOLL_CTL_ADD, connfd, &ev);
+
+			} else { // clientfd
+
+				int connfd = events[i].data.fd;
+				
+				int n = nrecv(connfd, buff, BUFFER_SIZE, 0); //block
+				if (n > 0) {
+					printf("recv: %s\n", buff);
+					nsend(connfd, buff, n, 0);
+
+				} else {
+
+					nepoll_ctl(epfd, EPOLL_CTL_DEL, connfd, NULL);
+					nclose(connfd);
+					
+				} 
+
+			}
+
+		}
+	}
+
+}
+
+
+#elif 0
+
 static void *client_thread(void *arg) {
 
 	int connfd = *(int *)arg;
@@ -2273,7 +2642,47 @@ static void *client_thread(void *arg) {
 	return NULL;
 }
 
-#endif
+
+
+static int tcp_server_entry(__attribute__((unused))  void *arg)  {
+
+	int listenfd = nsocket(AF_INET, SOCK_STREAM, 0);
+	if (listenfd == -1) {
+		return -1;
+	}
+
+	struct sockaddr_in servaddr;
+	memset(&servaddr, 0, sizeof(struct sockaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	servaddr.sin_port = htons(9999);
+	nbind(listenfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+
+	nlisten(listenfd, 10);
+
+	
+
+	while (1) {
+		
+		struct sockaddr_in client;
+		socklen_t len = sizeof(client);
+		int connfd = naccept(listenfd, (struct sockaddr*)&client, &len);
+
+		pthread_t thid;		
+		pthread_create(&thid, NULL, client_thread, &connfd);
+
+	
+	}
+
+
+	nclose(listenfd);
+	
+
+}
+
+
+#else
+
 
 // hook
 static int tcp_server_entry(__attribute__((unused))  void *arg)  {
@@ -2292,20 +2701,18 @@ static int tcp_server_entry(__attribute__((unused))  void *arg)  {
 
 	nlisten(listenfd, 10);
 
-#if ENABLE_ONCE_MODE
-
 	while (1) {
 		
 		struct sockaddr_in client;
 		socklen_t len = sizeof(client);
 		int connfd = naccept(listenfd, (struct sockaddr*)&client, &len);
-		
+
 		char buff[BUFFER_SIZE] = {0};
 		while (1) {
 
 			int n = nrecv(connfd, buff, BUFFER_SIZE, 0); //block
 			if (n > 0) {
-				printf("---> ack --> recv: %s\n", buff);
+				printf("recv: %s\n", buff);
 				nsend(connfd, buff, n, 0);
 
 			} else if (n == 0) {
@@ -2315,79 +2722,15 @@ static int tcp_server_entry(__attribute__((unused))  void *arg)  {
 			} else { //nonblock
 
 			}
-			
 		}
+
 	}
-
-#endif
-
-#if ENABLE_THREAD_MODE
-
-	while (1) {
-		
-		struct sockaddr_in client;
-		socklen_t len = sizeof(client);
-		int connfd = naccept(listenfd, (struct sockaddr*)&client, &len);
-
-		pthread_t thid;		
-		pthread_create(&thid, NULL, client_thread, &connfd);
-
-	
-	}
-#endif
-
-#if ENABLE_SYS_EPOLL_MODE
-
-	int epfd = epoll_create(1);	
-
-	struct epoll_event ev;	
-	ev.events = EPOLLIN;	
-	ev.data.fd = listenfd;	
-	epoll_ctl(epfd, EPOLL_CTL_ADD, listenfd, &ev);
-
-	struct sockaddr_in  clientaddr;	
-	socklen_t len = sizeof(clientaddr);
-
-	while (1) {		
-		struct epoll_event events[1024] = {0};		
-		int nready = epoll_wait(epfd, events, 1024, -1);
-
-		int i = 0;		
-		for (i = 0;i < nready;i ++) {
-			int connfd = events[i].data.fd;			
-			if (connfd == listenfd) {								
-				int clientfd = naccept(listenfd, (struct sockaddr*)&clientaddr, &len);	
-				printf("accept finshed: %d\n", clientfd);				
-				ev.events = EPOLLIN;				
-				ev.data.fd = clientfd;				
-				epoll_ctl(epfd, EPOLL_CTL_ADD, clientfd, &ev);	
-				
-			} else if (events[i].events & EPOLLIN) {				
-				char buffer[1024] = {0};								
-				int count = nrecv(connfd, buffer, 1024, 0);
-				
-				if (count == 0) { // disconnect					
-					printf("client disconnect: %d\n", connfd);					
-					nclose(connfd);					
-					epoll_ctl(epfd, EPOLL_CTL_DEL, connfd, NULL);	
-					continue;				
-				}				
-				printf("RECV: %s\n", buffer);				
-				count = nsend(connfd, buffer, count, 0);				
-				printf("SEND: %d\n", count);			
-			}
-		}
-	}
-#endif
-
-#if ENABLE_DPDK_EPOLL_MODE
-
-#endif
-
 	nclose(listenfd);
 	
 
 }
+
+#endif
 
 
 #endif
@@ -2581,7 +2924,7 @@ static int ddos_detect(struct rte_mbuf *pkt) {
 		double entropy = ddos_entropy(total_set, total_bit);
 
 	// nan -->  
-		printf("%u/%u Entropy(%f), Total_Entropy(%f)\n", total_set, total_bit, sum_entropy, entropy);
+		//printf("%u/%u Entropy(%f), Total_Entropy(%f)\n", total_set, total_bit, sum_entropy, entropy);
 		if (tresh <  sum_entropy - entropy) { // ddos attack
 
 			if (!flag) { // detect

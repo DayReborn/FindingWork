@@ -1241,7 +1241,7 @@ c
 >   ```c
 >   // 线程1：添加事件
 >   epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
->       
+>           
 >   // 线程2：删除事件
 >   epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
 >   ```
@@ -3920,7 +3920,7 @@ sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
 >   ```c
 >   // 初始化epoll
 >   scheduler.epfd = epoll_create1(0);
->     
+>         
 >   // 添加socket到epoll监听
 >   struct epoll_event ev;
 >   ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
@@ -5609,3 +5609,206 @@ int main(int argc, char *argv[])
 
 
 ## 2.4.4 手把手设计实现epoll
+
+> 我们手写的tcp协议栈怎么样做到并发！！！
+>
+> 这就是我们实现的要求！！！
+
+
+
+### 一、一请求一线程
+
+```c
+#if ENABLE_THREAD_MODE
+static void *client_thread(void *arg) {
+	int connfd = *(int *)arg;
+	while (1) {
+		char buff[BUFFER_SIZE] = {0};
+		int n = nrecv(connfd, buff, BUFFER_SIZE, 0); //block
+		if (n > 0) {
+			printf("---> ack --> recv: %s\n", buff);
+			nsend(connfd, buff, n, 0);
+		} else if (n == 0) {
+			nclose(connfd);
+			break;
+		} else { //nonblock
+		}
+	}
+	return NULL;
+}
+
+#endif
+
+// hook
+static int tcp_server_entry(__attribute__((unused))  void *arg)  {
+	int listenfd = nsocket(AF_INET, SOCK_STREAM, 0);
+	if (listenfd == -1) {
+		return -1;
+	}
+	struct sockaddr_in servaddr;
+	memset(&servaddr, 0, sizeof(struct sockaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	servaddr.sin_port = htons(9999);
+	nbind(listenfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+	nlisten(listenfd, 10);
+
+#if 0
+	while (1) {
+		struct sockaddr_in client;
+		socklen_t len = sizeof(client);
+		int connfd = naccept(listenfd, (struct sockaddr*)&client, &len);
+		
+		char buff[BUFFER_SIZE] = {0};
+		while (1) {
+			int n = nrecv(connfd, buff, BUFFER_SIZE, 0); //block
+			if (n > 0) {
+				printf("---> ack --> recv: %s\n", buff);
+				nsend(connfd, buff, n, 0);
+			} else if (n == 0) {
+				nclose(connfd);
+				break;
+			} else { //nonblock
+			}
+			
+		}
+	}
+#elif ENABLE_THREAD_MODE
+
+	while (1) {
+		
+		struct sockaddr_in client;
+		socklen_t len = sizeof(client);
+		int connfd = naccept(listenfd, (struct sockaddr*)&client, &len);
+
+		pthread_t thid;		
+		pthread_create(&thid, NULL, client_thread, &connfd);
+	}
+
+```
+
+
+
+
+
+> 这个代码本质上似曾相识：
+>
+> 因为实际上dpdk只是作为网络层
+>
+> 我们的写法已经是应用层了！！！！！
+
+
+
+
+
+> 当然可能报错如下：
+>
+> ![image-20250717212103284](note/image-20250717212103284.png)
+>
+> 
+>
+> 代码的整体流程分析起来的如下：
+>
+> ![image-20250717212604077](note/image-20250717212604077.png)
+>
+> > ![image-20250717213529574](note/image-20250717213529574.png)
+> >
+> > ![image-20250717213539225](note/image-20250717213539225.png)
+> >
+> > 从这边可以看到，每个tcp连接创建流的时候，都会定义一个sendbuf，和recvbuf，所以说我们不需要担心！！！！这是一个连接单独用的
+>
+> 
+>
+> ![image-20250717214525990](note/image-20250717214525990.png)
+>
+> 其实我们的问题就出在这！！！创建buf的时候使用了同名的buf
+>
+> 修改为独立的即可！！！
+>
+> 
+
+
+
+### 二、使用epoll方式
+
+> 首先明确一点：
+>
+> #### 我们这里创建的fd，跟系统的fd不是一个东西。
+>
+> ![image-20250717225623055](note/image-20250717225623055.png)
+>
+> ![image-20250717230149770](note/image-20250717230149770.png)
+>
+> ==这边的fd是我们的代码自行进行的分配！！！！！==
+
+
+
+
+
+> 所以我们不能直接使用系统自带的epoll
+>
+> 我们需要自己实现一个epoll的方式
+>
+> 当我们这么实现的时候：
+>
+> ![image-20250717233707423](note/image-20250717233707423.png)
+>
+> 直接没有用！！！！！！！！！！
+>
+> ![image-20250717234530669](note/image-20250717234530669.png)
+
+
+
+---
+
+> **==思考  多个epoll怎么做！==**
+
+
+
+---
+
+
+
+![image-20250717235106973](note/image-20250717235106973.png)
+
+
+
+---
+
+
+
+![image-20250717235124748](note/image-20250717235124748.png)
+
+> ==简单来说哈希表的话，他的内存开辟是不连续的，会以指数的情况，开辟内存空间==
+>
+> b树的话，他开辟的是一块区间快，层高低，查找性能不好
+>
+> 跳表的话就太复杂了
+
+
+
+
+
+---
+
+
+
+### 三、总结
+
+---
+
+
+
+![image-20250717235139855](note/image-20250717235139855.png)
+
+
+
+---
+
+1. 红黑树结构
+
+![image-20250718001426869](note/image-20250718001426869.png)
+
+
+
+### ![image-20250718003731294](note/image-20250718003731294.png)
