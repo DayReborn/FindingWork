@@ -38,12 +38,15 @@ void server_reader(void *arg) {
 			char response[1024] = {0};
 
 			int slength = kvs_handler(buf, ret, response);
-
-			ret = send(fd, buf, strlen(buf), 0);
-			if (ret == -1) {
+			if (slength > 0) {
+				ret = send(fd, response, slength, 0);
+				if (ret == -1) {
 				close(fd);
 				break;
 			}
+			}
+			
+			
 		} else if (ret == 0) {	
 			close(fd);
 			break;

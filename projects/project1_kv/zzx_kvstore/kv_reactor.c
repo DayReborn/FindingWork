@@ -229,7 +229,7 @@ int send_cb(int fd) {
 	}
 #else
 
-	if (conn_list[fd].wlength != 0) {
+	if (conn_list[fd].wlength > 0) {
 		count = send(fd, conn_list[fd].wbuffer, conn_list[fd].wlength, 0);
 	}
 	
