@@ -1,80 +1,97 @@
 
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-
 #include "kvstore.h"
 
-rbtree_node *rbtree_mini(rbtree *T, rbtree_node *x) {
-	while (x->left != T->nil) {
+rbtree_node *rbtree_mini(rbtree *T, rbtree_node *x)
+{
+	while (x->left != T->nil)
+	{
 		x = x->left;
 	}
 	return x;
 }
 
-rbtree_node *rbtree_maxi(rbtree *T, rbtree_node *x) {
-	while (x->right != T->nil) {
+rbtree_node *rbtree_maxi(rbtree *T, rbtree_node *x)
+{
+	while (x->right != T->nil)
+	{
 		x = x->right;
 	}
 	return x;
 }
 
-rbtree_node *rbtree_successor(rbtree *T, rbtree_node *x) {
+rbtree_node *rbtree_successor(rbtree *T, rbtree_node *x)
+{
 	rbtree_node *y = x->parent;
 
-	if (x->right != T->nil) {
+	if (x->right != T->nil)
+	{
 		return rbtree_mini(T, x->right);
 	}
 
-	while ((y != T->nil) && (x == y->right)) {
+	while ((y != T->nil) && (x == y->right))
+	{
 		x = y;
 		y = y->parent;
 	}
 	return y;
 }
 
+void rbtree_left_rotate(rbtree *T, rbtree_node *x)
+{
 
-void rbtree_left_rotate(rbtree *T, rbtree_node *x) {
+	rbtree_node *y = x->right; // x  --> y  ,  y --> x,   right --> left,  left --> right
 
-	rbtree_node *y = x->right;  // x  --> y  ,  y --> x,   right --> left,  left --> right
-
-	x->right = y->left; //1 1
-	if (y->left != T->nil) { //1 2
+	x->right = y->left; // 1 1
+	if (y->left != T->nil)
+	{ // 1 2
 		y->left->parent = x;
 	}
 
-	y->parent = x->parent; //1 3
-	if (x->parent == T->nil) { //1 4
+	y->parent = x->parent; // 1 3
+	if (x->parent == T->nil)
+	{ // 1 4
 		T->root = y;
-	} else if (x == x->parent->left) {
+	}
+	else if (x == x->parent->left)
+	{
 		x->parent->left = y;
-	} else {
+	}
+	else
+	{
 		x->parent->right = y;
 	}
 
-	y->left = x; //1 5
-	x->parent = y; //1 6
+	y->left = x;   // 1 5
+	x->parent = y; // 1 6
 }
 
-
-void rbtree_right_rotate(rbtree *T, rbtree_node *y) {
+void rbtree_right_rotate(rbtree *T, rbtree_node *y)
+{
 
 	rbtree_node *x = y->left;
 
 	y->left = x->right;
-	if (x->right != T->nil) {
+	if (x->right != T->nil)
+	{
 		x->right->parent = y;
 	}
 
 	x->parent = y->parent;
-	if (y->parent == T->nil) {
+	if (y->parent == T->nil)
+	{
 		T->root = x;
-	} else if (y == y->parent->right) {
+	}
+	else if (y == y->parent->right)
+	{
 		y->parent->right = x;
-	} else {
+	}
+	else
+	{
 		y->parent->left = x;
 	}
 
@@ -82,20 +99,27 @@ void rbtree_right_rotate(rbtree *T, rbtree_node *y) {
 	y->parent = x;
 }
 
-void rbtree_insert_fixup(rbtree *T, rbtree_node *z) {
+void rbtree_insert_fixup(rbtree *T, rbtree_node *z)
+{
 
-	while (z->parent->color == RED) { //z ---> RED
-		if (z->parent == z->parent->parent->left) {
+	while (z->parent->color == RED)
+	{ // z ---> RED
+		if (z->parent == z->parent->parent->left)
+		{
 			rbtree_node *y = z->parent->parent->right;
-			if (y->color == RED) {
+			if (y->color == RED)
+			{
 				z->parent->color = BLACK;
 				y->color = BLACK;
 				z->parent->parent->color = RED;
 
-				z = z->parent->parent; //z --> RED
-			} else {
+				z = z->parent->parent; // z --> RED
+			}
+			else
+			{
 
-				if (z == z->parent->right) {
+				if (z == z->parent->right)
+				{
 					z = z->parent;
 					rbtree_left_rotate(T, z);
 				}
@@ -104,16 +128,22 @@ void rbtree_insert_fixup(rbtree *T, rbtree_node *z) {
 				z->parent->parent->color = RED;
 				rbtree_right_rotate(T, z->parent->parent);
 			}
-		}else {
+		}
+		else
+		{
 			rbtree_node *y = z->parent->parent->left;
-			if (y->color == RED) {
+			if (y->color == RED)
+			{
 				z->parent->color = BLACK;
 				y->color = BLACK;
 				z->parent->parent->color = RED;
 
-				z = z->parent->parent; //z --> RED
-			} else {
-				if (z == z->parent->left) {
+				z = z->parent->parent; // z --> RED
+			}
+			else
+			{
+				if (z == z->parent->left)
+				{
 					z = z->parent;
 					rbtree_right_rotate(T, z);
 				}
@@ -123,51 +153,68 @@ void rbtree_insert_fixup(rbtree *T, rbtree_node *z) {
 				rbtree_left_rotate(T, z->parent->parent);
 			}
 		}
-		
 	}
 
 	T->root->color = BLACK;
 }
 
-
-void rbtree_insert(rbtree *T, rbtree_node *z) {
+void rbtree_insert(rbtree *T, rbtree_node *z)
+{
 
 	rbtree_node *y = T->nil;
 	rbtree_node *x = T->root;
 
-	while (x != T->nil) {
+	while (x != T->nil)
+	{
 		y = x;
 #if ENABLE_KEY_CHAR
 
-		if (strcmp(z->key, x->key) < 0) {
+		if (strcmp(z->key, x->key) < 0)
+		{
 			x = x->left;
-		} else if (strcmp(z->key, x->key) > 0) {
+		}
+		else if (strcmp(z->key, x->key) > 0)
+		{
 			x = x->right;
-		} else {
-			return ;
+		}
+		else
+		{
+			return;
 		}
 
 #else
-		if (z->key < x->key) {
+		if (z->key < x->key)
+		{
 			x = x->left;
-		} else if (z->key > x->key) {
+		}
+		else if (z->key > x->key)
+		{
 			x = x->right;
-		} else { //Exist
-			return ;
+		}
+		else
+		{ // Exist
+			return;
 		}
 #endif
 	}
 
 	z->parent = y;
-	if (y == T->nil) {
+	if (y == T->nil)
+	{
 		T->root = z;
 #if ENABLE_KEY_CHAR
-	} else if (strcmp(z->key, y->key) < 0) {
+	}
+	else if (strcmp(z->key, y->key) < 0)
+	{
 #else
-	} else if (z->key < y->key) {
+	}
+	else if (z->key < y->key)
+	{
 #endif
 		y->left = z;
-	} else {
+	}
+	else
+	{
 		y->right = z;
 	}
 
@@ -178,13 +225,17 @@ void rbtree_insert(rbtree *T, rbtree_node *z) {
 	rbtree_insert_fixup(T, z);
 }
 
-void rbtree_delete_fixup(rbtree *T, rbtree_node *x) {
+void rbtree_delete_fixup(rbtree *T, rbtree_node *x)
+{
 
-	while ((x != T->root) && (x->color == BLACK)) {
-		if (x == x->parent->left) {
+	while ((x != T->root) && (x->color == BLACK))
+	{
+		if (x == x->parent->left)
+		{
 
-			rbtree_node *w= x->parent->right;
-			if (w->color == RED) {
+			rbtree_node *w = x->parent->right;
+			if (w->color == RED)
+			{
 				w->color = BLACK;
 				x->parent->color = RED;
 
@@ -192,12 +243,16 @@ void rbtree_delete_fixup(rbtree *T, rbtree_node *x) {
 				w = x->parent->right;
 			}
 
-			if ((w->left->color == BLACK) && (w->right->color == BLACK)) {
+			if ((w->left->color == BLACK) && (w->right->color == BLACK))
+			{
 				w->color = RED;
 				x = x->parent;
-			} else {
+			}
+			else
+			{
 
-				if (w->right->color == BLACK) {
+				if (w->right->color == BLACK)
+				{
 					w->left->color = BLACK;
 					w->color = RED;
 					rbtree_right_rotate(T, w);
@@ -211,23 +266,29 @@ void rbtree_delete_fixup(rbtree *T, rbtree_node *x) {
 
 				x = T->root;
 			}
-
-		} else {
+		}
+		else
+		{
 
 			rbtree_node *w = x->parent->left;
-			if (w->color == RED) {
+			if (w->color == RED)
+			{
 				w->color = BLACK;
 				x->parent->color = RED;
 				rbtree_right_rotate(T, x->parent);
 				w = x->parent->left;
 			}
 
-			if ((w->left->color == BLACK) && (w->right->color == BLACK)) {
+			if ((w->left->color == BLACK) && (w->right->color == BLACK))
+			{
 				w->color = RED;
 				x = x->parent;
-			} else {
+			}
+			else
+			{
 
-				if (w->left->color == BLACK) {
+				if (w->left->color == BLACK)
+				{
 					w->right->color = BLACK;
 					w->color = RED;
 					rbtree_left_rotate(T, w);
@@ -241,40 +302,52 @@ void rbtree_delete_fixup(rbtree *T, rbtree_node *x) {
 
 				x = T->root;
 			}
-
 		}
 	}
 
 	x->color = BLACK;
 }
 
-rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z) {
+rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z)
+{
 
 	rbtree_node *y = T->nil;
 	rbtree_node *x = T->nil;
 
-	if ((z->left == T->nil) || (z->right == T->nil)) {
+	if ((z->left == T->nil) || (z->right == T->nil))
+	{
 		y = z;
-	} else {
+	}
+	else
+	{
 		y = rbtree_successor(T, z);
 	}
 
-	if (y->left != T->nil) {
+	if (y->left != T->nil)
+	{
 		x = y->left;
-	} else if (y->right != T->nil) {
+	}
+	else if (y->right != T->nil)
+	{
 		x = y->right;
 	}
 
 	x->parent = y->parent;
-	if (y->parent == T->nil) {
+	if (y->parent == T->nil)
+	{
 		T->root = x;
-	} else if (y == y->parent->left) {
+	}
+	else if (y == y->parent->left)
+	{
 		y->parent->left = x;
-	} else {
+	}
+	else
+	{
 		y->parent->right = x;
 	}
 
-	if (y != z) {
+	if (y != z)
+	{
 #if ENABLE_KEY_CHAR
 
 		void *tmp = z->key;
@@ -282,7 +355,7 @@ rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z) {
 		y->key = tmp;
 
 		tmp = z->value;
-		z->value= y->value;
+		z->value = y->value;
 		y->value = tmp;
 
 #else
@@ -291,43 +364,57 @@ rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z) {
 #endif
 	}
 
-	if (y->color == BLACK) {
+	if (y->color == BLACK)
+	{
 		rbtree_delete_fixup(T, x);
 	}
 
 	return y;
 }
 
-rbtree_node *rbtree_search(rbtree *T, KEY_TYPE key) {
+rbtree_node *rbtree_search(rbtree *T, KEY_TYPE key)
+{
 
 	rbtree_node *node = T->root;
-	while (node != T->nil) {
+	while (node != T->nil)
+	{
 #if ENABLE_KEY_CHAR
 
-		if (strcmp(key, node->key) < 0) {
+		if (strcmp(key, node->key) < 0)
+		{
 			node = node->left;
-		} else if (strcmp(key, node->key) > 0) {
+		}
+		else if (strcmp(key, node->key) > 0)
+		{
 			node = node->right;
-		} else {
+		}
+		else
+		{
 			return node;
 		}
 
 #else
-		if (key < node->key) {
+		if (key < node->key)
+		{
 			node = node->left;
-		} else if (key > node->key) {
+		}
+		else if (key > node->key)
+		{
 			node = node->right;
-		} else {
+		}
+		else
+		{
 			return node;
-		}	
+		}
 #endif
 	}
 	return T->nil;
 }
 
-
-void rbtree_traversal(rbtree *T, rbtree_node *node) {
-	if (node != T->nil) {
+void rbtree_traversal(rbtree *T, rbtree_node *node)
+{
+	if (node != T->nil)
+	{
 		rbtree_traversal(T, node->left);
 #if ENABLE_KEY_CHAR
 		printf("key:%s, value:%s\n", node->key, (char *)node->value);
@@ -337,6 +424,299 @@ void rbtree_traversal(rbtree *T, rbtree_node *node) {
 		rbtree_traversal(T, node->right);
 	}
 }
+
+//===================================================
+// KVS红黑树相关定义
+//===================================================
+typedef struct _rbtree kvs_rbtree_t;
+
+kvs_rbtree_t global_rbtree;
+
+/**
+ * @brief 创建KVS红黑树实例
+ * @param inst 指向kvs_rbtree_t实例的指针
+ * @return int 成功返回0，失败返回负数
+ * @note 如果inst为NULL，则返回-1
+ * @note 如果实例已经创建，则返回-2
+ * @note 如果内存分配失败，则返回-3
+ *
+ */
+int kvs_rbtree_create(kvs_rbtree_t *inst)
+{
+
+	if (!inst)
+	{
+		DEBUG("Invalid instance\n");
+		return -1;
+	}
+	if (inst->root || inst->nil)
+	{
+		DEBUG("Instance already created\n");
+		return -2;
+	}
+	inst->nil = (rbtree_node *)kvs_malloc(sizeof(rbtree_node));
+	if (!inst->nil)
+	{
+		DEBUG("Failed to allocate memory for nil node\n");
+		return -3;
+	}
+	memset(inst->nil, 0, sizeof(rbtree_node));
+	inst->nil->color = BLACK; // nil节点颜色为黑色
+	inst->root = inst->nil;	  // 初始化根节点为nil
+	DEBUG("KVS rbtree created successfully\n");
+	return 0; // 成功创建
+}
+
+/**
+ * @brief 销毁KVS红黑树实例
+ * @param inst 指向kvs_rbtree_t实例的指针
+ * @note 如果inst为NULL，则不执行任何操作
+ */
+void kvs_rbtree_destory(kvs_rbtree_t *inst)
+{
+
+	if (!inst)
+	{
+		DEBUG("Invalid instance\n");
+		return;
+	}
+	rbtree_node *node = NULL;
+
+	while (!(node = inst->root))
+	{
+
+		rbtree_node *mini = rbtree_mini(inst, node);
+
+		rbtree_node *cur = rbtree_delete(inst, mini);
+		kvs_free(cur);
+	}
+	kvs_free(inst->nil);
+	DEBUG("KVS rbtree destroyed successfully\n");
+	return;
+}
+
+
+/**
+ * @brief 设置键值对到KVS红黑树
+ * @param inst 指向kvs_rbtree_t实例的指针
+ * @param key 键字符串
+ * @param value 值字符串
+ * @return 设置成功返回0；键已存在返回正数；失败返回负数
+ * @note 如果inst或key/value为NULL，则返回-1
+ * @note 如果节点内存分配失败，则返回-2
+ * @note 如果key内存分配失败，则返回-3
+ * @note 如果value内存分配失败，则返回-4
+ * @note 如果键不存在，则添加新的键值对并返回0
+ * @note 如果键已存在且值相同，则返回1
+ * @note 如果键已存在但值不同，则更新值并返回2
+ */
+int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value)
+{
+    // 参数检查
+    if (!inst || !key || !value)
+    {
+        DEBUG("Invalid arguments to kvs_rbtree_set\n");
+        return -1;
+    }
+
+    // 检查键是否已存在
+    rbtree_node *existing = rbtree_search(inst, key);
+    if (existing != inst->nil)
+    {
+        DEBUG("Key already exists: %s\n", key);
+        // 检查值是否相同
+        if (strcmp(existing->value, value) == 0)
+        {
+            DEBUG("Value is the same, no need to update\n");
+            return 1; // 键已存在且值相同
+        }
+
+        // 更新值
+        kvs_free(existing->value);
+        existing->value = kvs_malloc(strlen(value) + 1);
+        if (!existing->value)
+        {
+            DEBUG("Failed to allocate memory for value copy\n");
+            return -4;
+        }
+        memset(existing->value, 0, strlen(value) + 1);
+        strcpy(existing->value, value);
+        DEBUG("Updated key: %s with new value: %s\n", key, value);
+        return 0; // 键已存在但值不同，已更新
+    }
+
+    // 创建新节点
+    rbtree_node *newNode = (rbtree_node *)kvs_malloc(sizeof(rbtree_node));
+    if (!newNode)
+    {
+        DEBUG("Failed to allocate memory for new node\n");
+        return -2;
+    }
+
+    // 分配并复制键
+    newNode->key = kvs_malloc(strlen(key) + 1);
+    if (!newNode->key)
+    {
+        DEBUG("Failed to allocate memory for key copy\n");
+        kvs_free(newNode);
+        return -3;
+    }
+    memset(newNode->key, 0, strlen(key) + 1);
+    strcpy(newNode->key, key);
+
+    // 分配并复制值
+    newNode->value = kvs_malloc(strlen(value) + 1);
+    if (!newNode->value)
+    {
+        DEBUG("Failed to allocate memory for value copy\n");
+        kvs_free(newNode->key);
+        kvs_free(newNode);
+        return -4;
+    }
+    memset(newNode->value, 0, strlen(value) + 1);
+    strcpy(newNode->value, value);
+
+    // 插入新节点到红黑树
+    rbtree_insert(inst, newNode);
+    DEBUG("Added key: %s, value: %s\n", key, value);
+    return 0; // 成功添加新键值对
+}
+
+/**
+ * @brief 检查KVS红黑树中是否存在指定键
+ * @param inst 指向kvs_rbtree_t实例的指针
+ * @param key 键字符串
+ * @return 返回找到的值，如果未找到则返回NULL
+ * @note 如果inst或key为NULL，则返回NULL
+ * @note 如果键不存在，则返回NULL
+ * @note 如果找到键，则返回对应的值指针
+ */
+char *kvs_rbtree_get(kvs_rbtree_t *inst, char *key)
+{
+	if (!inst || !key)
+	{
+		DEBUG("Invalid arguments to kvs_rbtree_get\n");
+		return NULL;
+	}
+
+	rbtree_node *node = rbtree_search(inst, key);
+	if (!node || node == inst->nil)
+	{
+		DEBUG("Key not found: %s\n", key);
+		return NULL; // no exist
+	}
+	DEBUG("Found key: %s, value: %s\n", node->key, (char *)node->value);
+	return node->value; // 返回找到的值
+}
+
+/**
+ * @brief 删除KVS红黑树中的指定键
+ * @param inst 指向kvs_rbtree_t实例的指针
+ * @param key 键字符串
+ * @return 成功返回0，未找到键返回1，失败返回负数
+ * @note 如果inst或key为NULL，则返回-1
+ * @note 如果键不存在，则返回1
+ * @note 如果成功删除键值对，则返回0
+ */
+int kvs_rbtree_del(kvs_rbtree_t *inst, char *key)
+{
+	if (!inst || !key)
+	{
+		DEBUG("Invalid arguments to kvs_rbtree_del\n");
+		return -1;
+	}
+
+	rbtree_node *node = rbtree_search(inst, key);
+	if (!node || node == inst->nil)
+	{
+		DEBUG("Key not found for deletion: %s\n", key);
+		return 1; // no exist
+	}
+
+	rbtree_node *deletedNode = rbtree_delete(inst, node);
+	if (!deletedNode)
+	{
+		DEBUG("Failed to delete node for key: %s\n", key);
+		return -2; // 删除失败
+	}
+
+	kvs_free(deletedNode->key);
+	kvs_free(deletedNode->value);
+	kvs_free(deletedNode);
+
+	DEBUG("Successfully deleted key: %s\n", key);
+	return 0; // 成功删除
+}
+
+/**
+ * @brief 修改KVS红黑树中指定键的值
+ * @param inst 指向kvs_rbtree_t实例的指针
+ * @param key 键字符串
+ * @param value 新的值字符串
+ * @return 成功返回0，未找到键返回1，失败返回负数
+ * @note 如果inst或key/value为NULL，则返回-1
+ * @note 如果键不存在，则返回1
+ * @note 如果成功修改键值对，则返回0
+ */
+int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value)
+{
+	if (!inst || !key || !value)
+	{
+		DEBUG("Invalid arguments to kvs_rbtree_mod\n");
+		return -1;
+	}
+
+	rbtree_node *node = rbtree_search(inst, key);
+	if (!node || node == inst->nil)
+	{
+		DEBUG("Key not found for modification: %s\n", key);
+		return 1; // 未找到键
+	}
+
+	DEBUG("Modifying key: %s with new value: %s\n", key, value);
+	kvs_free(node->value); // 释放旧值
+	node->value = kvs_malloc(strlen(value) + 1);
+	if (!node->value)
+	{
+		DEBUG("Failed to allocate memory for new value\n");
+		return -2; // 内存分配失败
+	}
+	memset(node->value, 0, strlen(value) + 1);
+	strcpy(node->value, value);
+
+	DEBUG("Successfully modified key: %s with new value: %s\n", key, value);
+	return 0; // 成功修改1
+}
+
+/**
+ * @brief 检查KVS红黑树中是否存在指定键
+ * @param inst 指向kvs_rbtree_t实例的指针
+ * @param key 键字符串
+ * @return 如果键存在返回0，不存在返回1，失败返回-1
+ * @note 如果inst或key为NULL，则返回-1
+ * @note 如果键不存在，则返回1
+ * @note 如果找到键，则返回0
+ */
+int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key)
+{
+	if (!inst || !key)
+	{
+		DEBUG("Invalid arguments to kvs_rbtree_exist\n");
+		return -1;
+	}
+
+	rbtree_node *node = rbtree_search(inst, key);
+	if (!node || node == inst->nil)
+	{
+		DEBUG("Key does not exist: %s\n", key);
+		return 1; // 键不存在
+	}
+
+	DEBUG("Key exists: %s\n", key);
+	return 0; // 键存在
+}
+
+
 
 
 #if 0
@@ -432,122 +812,3 @@ int main() {
 }
 
 #endif
-
-
-typedef struct _rbtree kvs_rbtree_t; 
-
-kvs_rbtree_t global_rbtree;
-
-// 5 + 2
-int kvs_rbtree_create(kvs_rbtree_t *inst) {
-
-	if (inst == NULL) return 1;
-
-	inst->nil = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
-	inst->nil->color = BLACK;
-	inst->root = inst->nil;
-
-	return 0;
-
-}
-
-void kvs_rbtree_destory(kvs_rbtree_t *inst) {
-
-	if (inst == NULL) return ;
-
-	rbtree_node *node = NULL;
-
-	while (!(node = inst->root)) {
-		
-		rbtree_node *mini = rbtree_mini(inst, node);
-		
-		rbtree_node *cur = rbtree_delete(inst, mini);
-		kvs_free(cur);
-		
-	}
-
-	kvs_free(inst->nil);
-
-	return ;
-
-}
-
-
-int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
-
-	if (!inst || !key || !value) return -1;
-
-	rbtree_node *node = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
-		
-	node->key = kvs_malloc(strlen(key) + 1);
-	if (!node->key) return -2;
- 	memset(node->key, 0, strlen(key) + 1);
-	strcpy(node->key, key);
-	
-	node->value = kvs_malloc(strlen(value) + 1);
-	if (!node->value) return -2;
-	memset(node->value, 0, strlen(value) + 1);
-	strcpy(node->value, value);
-
-	rbtree_insert(inst, node);
-
-	return 0;
-}
-
-
-char* kvs_rbtree_get(kvs_rbtree_t *inst, char *key)  {
-
-	if (!inst || !key) return NULL;
-	rbtree_node *node = rbtree_search(inst, key);
-	if (!node) return NULL; // no exist
-	if (node == inst->nil) return NULL;
-
-	return node->value;
-	
-}
-
-int kvs_rbtree_del(kvs_rbtree_t *inst, char *key) {
-
-	if (!inst || !key) return -1;
-
-	rbtree_node *node = rbtree_search(inst, key);
-	if (!node) return 1; // no exist
-	
-	rbtree_node *cur = rbtree_delete(inst, node);
-	free(cur);
-
-	return 0;
-}
-
-int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value) {
-
-	if (!inst || !key || !value) return -1;
-
-	rbtree_node *node = rbtree_search(inst, key);
-	if (!node) return 1; // no exist
-	if (node == inst->nil) return 1;
-	
-	kvs_free(node->value);
-
-	node->value = kvs_malloc(strlen(value) + 1);
-	if (!node->value) return -2;
-	
-	memset(node->value, 0, strlen(value) + 1);
-	strcpy(node->value, value);
-
-	return 0;
-
-}
-
-int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key) {
-
-	if (!inst || !key) return -1;
-
-	rbtree_node *node = rbtree_search(inst, key);
-	if (!node) return 1; // no exist
-	if (node == inst->nil) return 1;
-
-	return 0;
-}
-
-
