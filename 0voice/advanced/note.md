@@ -1241,7 +1241,7 @@ c
 >   ```c
 >   // 线程1：添加事件
 >   epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
->           
+>                     
 >   // 线程2：删除事件
 >   epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
 >   ```
@@ -3920,7 +3920,7 @@ sockfd: 3, clientfd: 4, count: 20, buffer: Welcome to NetAssist
 >   ```c
 >   // 初始化epoll
 >   scheduler.epfd = epoll_create1(0);
->         
+>                   
 >   // 添加socket到epoll监听
 >   struct epoll_event ev;
 >   ev.events = EPOLLIN | EPOLLET; // 边缘触发模式
@@ -5812,3 +5812,696 @@ static int tcp_server_entry(__attribute__((unused))  void *arg)  {
 
 
 ### ![image-20250718003731294](note/image-20250718003731294.png)
+
+
+
+
+
+
+
+---
+
+
+
+# 2.5 异步io机制 io_uring
+
+
+
+## 2.5.1 与epoll媲美的io_uring
+
+### 一、异步io的引入
+
+> ![image-20250718101141419](note/image-20250718101141419.png)
+>
+> ![image-20250718101205786](note/image-20250718101205786.png)
+>
+> 
+>
+> 虽然说我们希望将下面这些函数之间做成异步的，但本质上的话，**他们内部的实现实际上是同步的**
+>
+> `read(fd, buffer, length);`
+>
+> > 具体怎么理解呢，本质上我们的read这个操作是实现读取一个buffer，然后有一个返回值，返回这个buf或者返回-1，读取以及返回的操作就是同步的！！！
+> >
+> > 如果我们需要实现**==read的异步实现==**我们就需要将读请求以及数据返回两者分开！！！
+> >
+> > ---
+> >
+> > 这个地方的话可以参照之前的协程的思路：
+> >
+> > 我们会发送是否可读，可读就进行数据读取，不行就切换走。
+>
+> `write(fd, buffer, length);`
+>
+> `recv(fd, buffer, length, 0);`
+>
+> `send(fd, buffer, length, 0);`
+
+
+
+
+
+---
+
+
+
+### 二、io_uring感性认知
+
+> 1. 最简单的一点，我们调用`a_read()`的时候，我们只是将请求确定了（给入指定地址以及buffer的长度）。
+>
+> 2. 这时候我们就会把我们的请求发送到submit queue中去，然后由worker来依次执行即可。我们就不需要去管了。可以理解为类似于丢给线程池去做。
+>
+> 3. 读取结果出来之后，自动押到complete queue中去，之后我们可能会有个while读取之类的，本质上就是把耗时的读取操作单独开了一个线程这样！！！
+>
+> ![image-20250718103410634](note/image-20250718103410634.png)
+
+
+
+---
+
+
+
+> 当然这边也有两个问题需要思考一下：
+>
+> 1. **频繁copy过程， mmap** 
+>    将内存映射出来！！！mmap的方式！！避免多次读取！！！
+> 2. **如何做到线程安全**
+>    这边如果频繁加锁的话，就会导致性能肯定不高，所以说我们最好的做法，就是不加锁！！！
+>    **==不加锁的话，我们最好的做法就是使用环形队列。==**
+>    `ring % enteris`
+
+
+
+---
+
+
+
+> 新增了三个系统调用
+>
+> a. io_uring_setup
+> b. io_uring_enter
+> c. io_uring_register
+>
+> **这三者不好理解，所以在这个系统调用的基础上的话，作者封装了一个==liburing==这个库！！！**
+>
+> uring --> user_ring（环形）
+
+
+
+
+
+---
+
+
+
+### 三、io_uring + tcp server
+
+**内核版本最好是5.4之后的！！！**
+
+
+
+首先是正常编写：
+
+```c
+#include <stdio.h>
+#include <liburing.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <unistd.h>
+
+#define ENTRIES_LENGTH 1024
+
+int init_server(unsigned short port)
+{
+
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in serveraddr;
+    memset(&serveraddr, 0, sizeof(struct sockaddr_in));
+    serveraddr.sin_family = AF_INET;
+    serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serveraddr.sin_port = htons(port);
+
+    if (-1 == bind(sockfd, (struct sockaddr *)&serveraddr, sizeof(struct sockaddr)))
+    {
+        perror("bind");
+        return -1;
+    }
+
+    listen(sockfd, 10);
+
+    return sockfd;
+}
+
+int main(int argc, char *argv[])
+{
+
+    unsigned short port = 9999;
+    int sockfd = init_server(port);
+```
+
+
+
+之后是初始化iouring相关：
+
+```
+struct io_uring_params params;
+    memset(&params, 0, sizeof(params));
+
+    struct io_uring ring;
+    io_uring_queue_init_params(ENTRIES_LENGTH, &ring, &params);
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+```
+
+
+
+在之后实现`accept`
+
+![image-20250731174811415](./note/image-20250731174811415.png)
+
+![PixPin_2025-07-31_17-49-12](./note/PixPin_2025-07-31_17-49-12.png)
+
+
+
+实现的话同步异步就有两种：
+
+```c
+struct sockaddr_in clientaddr;
+    socklen_t len = sizeof(clientaddr);
+#if 0:
+	accept(sockfd, (struct sockaddr*)&clientaddr, &len);
+
+#else:
+    // set_event_accept(&ring, sockfd, (struct sockaddr*)&clientaddr, &len, 0);
+    io_uring_prep_accept(sqe, sockfd, (struct sockaddr *)&clientaddr, &len, 0);
+
+#endif
+```
+
+
+
+![PixPin_2025-07-31_17-54-21](./note/PixPin_2025-07-31_17-54-21.png)
+
+
+
+> ==sq的entry与cq的entry有什么关系？是不是一个节点？==
+>
+> ![image-20250801100451580](./note/image-20250801100451580.png)
+>
+> ### 一、**事件处理阶段不同**（核心差异）
+>
+> 1. **Reactor（如 epoll）**
+>    - **通知阶段**：内核在 **数据可读（`EPOLLIN`）** 时通知应用层
+>    - **操作阶段**：应用需 **主动调用 `read()`** 从内核缓冲区读取数据
+>    - 流程：`EPOLLIN通知 → 应用线程执行read()`
+> 2. **Proactor（如 io_uring）**
+>    - **通知阶段**：内核在 **数据已读完（`EVENT_READ`）** 后通知应用层
+>    - **操作阶段**：**内核自动完成读写操作**，应用直接使用结果
+>    - 流程：`应用提交异步请求 → 内核执行I/O → 通知应用结果`
+>
+> > ✅ **本质区别**：
+> > Reactor 通知 ​**​"何时能做I/O"​**​，Proactor 通知 ​**​"I/O已完成"​**​。
+>
+> ------
+>
+> ### 二、 **处理责任主体不同**
+>
+> |               |            Reactor (epoll)            |   Proactor (io_uring)    |
+> | :-----------: | :-----------------------------------: | :----------------------: |
+> | **I/O执行者** | 应用线程（收到`EPOLLIN`后需自行读写） | 内核线程（自动完成读写） |
+> | **应用角色**  |              主动参与者               |       被动接收结果       |
+>
+> - 示例流程对比：
+>   - **epoll (Reactor)**：
+>     `epoll_wait()返回可读 → 应用线程调用read() → 处理数据`
+>   - **io_uring (Proactor)**：
+>     `提交异步read请求 → 内核读数据到用户缓冲区 → 应用收到完成事件直接处理数据`
+>
+> ------
+>
+> ### 三、 **性能与编程复杂度**
+>
+> 1. **Reactor 优势**
+>    - 编程模型简单直观（同步思维）
+>    - 兼容性广（epoll 等主流实现成熟）
+> 2. **Proactor 优势**
+>    - **零拷贝潜力**：内核可直接将数据写入应用缓冲区
+>    - **减少上下文切换**：无需应用线程介入I/O操作
+>    - **高吞吐场景更高效**：适合10万+ QPS的高并发场景
+>
+> > ⚠️ **注意**：
+> > Proactor 需内核和框架深度支持（如io_uring的SQ/CQ队列机制），实现更复杂。
+>
+> ------
+>
+> ### **总结图示**
+>
+> ```
+> Reactor（epoll）：
+>   应用层： [发起epoll_wait] → [内核返回EPOLLIN] → [应用调用read()取数据]
+>                 ↑                      |
+>                 └───── 响应式处理 ──────┘
+> 
+> Proactor（io_uring）：
+>   应用层： [提交异步READ请求] → [内核自动执行READ] → [返回EVENT_READ结果]
+>                 ↑                                |
+>                 └────── 前摄式处理 ───────────────┘
+> ```
+>
+> 图中 `EPOLLIN → 数据可以读` 是 Reactor 的典型特征，而 `EVENT_READ → 数据已经读出来` 正是 Proactor 的核心设计，体现了 **异步完成** 的本质。掌握这三点区别，能更好选择高并发场景的I/O模型。
+
+
+
+
+
+先实现一个基础的打印功能：
+
+```c
+// 一次性从io_uring中获取多个完成事件
+// 这里可以处理cqe->res来获取结果
+struct io_uring_cqe *cqes[128];
+int nready = io_uring_peek_batch_cqe(&ring, cqes, 128);
+int i = 0;
+for (i = 0;i < nready;i ++) {
+    printf("cqe[%d] res: %d\n", i, cqes[i]->res);
+
+}
+```
+
+
+
+下列方式进行编译：
+
+```bash
+zhenxing@newkernel:~/share/2.5异步io机制 io_uring/zzx实现$ gcc -o uring_tcp_server uring_tcp_server.c -Wl,-Bstatic -luring -Wl,-Bdynamic
+
+```
+
+
+
+
+
+### 四、函数封装
+
+```
+int set_event_accept(struct io_uring *ring, int sockfd, struct sockaddr *addr,
+                     socklen_t *addrlen, int flags)
+{
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    struct conn_info accept_info = {
+        .fd = sockfd,
+        .event = EVENT_ACCEPT,
+    };
+
+    io_uring_prep_accept(sqe, sockfd, (struct sockaddr *)addr, addrlen, flags);
+    memcpy(&sqe->user_data, &accept_info, sizeof(struct conn_info));
+}
+
+int set_event_recv(struct io_uring *ring, int sockfd,
+                   void *buf, size_t len, int flags)
+{
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    struct conn_info accept_info = {
+        .fd = sockfd,
+        .event = EVENT_READ,
+    };
+
+    io_uring_prep_recv(sqe, sockfd, buf, len, flags);
+    memcpy(&sqe->user_data, &accept_info, sizeof(struct conn_info));
+}
+
+int set_event_send(struct io_uring *ring, int sockfd,
+                   void *buf, size_t len, int flags)
+{
+
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    struct conn_info accept_info = {
+        .fd = sockfd,
+        .event = EVENT_WRITE,
+    };
+
+    io_uring_prep_send(sqe, sockfd, buf, len, flags);
+    memcpy(&sqe->user_data, &accept_info, sizeof(struct conn_info));
+}
+
+```
+
+
+
+
+
+> 1. 建链
+> 2. qps 128, 512, 1k，2k
+> 3. io并发
+> 4. 断链
+
+
+
+
+
+
+
+---
+
+
+
+
+
+## 2.5.2 io_uring的使用场景
+
+### 一、参数传入
+
+> a. io_uring与epoll的对比
+> 测试工具
+>
+> 
+>
+> > 测试工具的需求
+> > 1. tcp client
+> > 2. -n req -t threadnum -c connection
+
+
+
+实现测试代码：
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+#include <sys/time.h>
+#include <pthread.h>
+#include <arpa/inet.h>
+
+
+#define TEST_MESSAGE "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdefghijklmnopqrstuvwxyz\r\n"
+#define RBUFFER_LENGTH 2048
+#define WBUFFER_LENGTH 2048
+
+// 创建一个客户端连接
+int connect_tcpserver(const char *ip, unsigned short port)
+{
+    int connfd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in tcpserver_addr;
+    memset(&tcpserver_addr, 0, sizeof(struct sockaddr_in));
+
+    tcpserver_addr.sin_family = AF_INET;
+    tcpserver_addr.sin_addr.s_addr = inet_addr(ip); // 点分十进制转为地址unsignedint32
+    tcpserver_addr.sin_port = htons(port);
+
+    int ret = connect(connfd, (struct sockaddr *)&tcpserver_addr, sizeof(struct sockaddr_in));
+    if (ret)
+    {
+        perror("connect");
+        return -1;
+    }
+
+    return connfd;
+}
+
+int send_recv_tcppkt(int fd)
+{
+    int res = send(fd, TEST_MESSAGE, strlen(TEST_MESSAGE), 0);
+    if (res < 0)
+    {
+        exit(1);
+    }
+
+    char rbuffer[RBUFFER_LENGTH] = {0};
+    res = recv(fd, rbuffer, RBUFFER_LENGTH, 0);
+    if (res <= 0)
+    {
+        exit(1);
+    }
+
+    if (strcmp(rbuffer, TEST_MESSAGE) != 0)
+    {
+        printf("failed: '%s' != '%s'\n", rbuffer, TEST_MESSAGE);
+        return -1;
+    }
+    return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    int opt;
+    while ((opt = getopt(argc, argv, "s:p:t:c:n:?")) != -1)
+    {
+        switch (opt)
+        {
+        case 's':
+            printf("-s: %s\n", optarg);
+            break;
+
+        case 'p':
+            printf("-p: %s\n", optarg);
+            break;
+
+        case 't':
+            printf("-t: %s\n", optarg);
+            break;
+
+        case 'c':
+            printf("-c: %s\n", optarg);
+            break;
+
+        case 'n':
+            printf("-n: %s\n", optarg);
+            break;
+
+        default:
+            return -1;
+        }
+    }
+}
+```
+
+
+
+> `while ((opt = getopt(argc, argv, "s:p:t:c:n:?")) != -1)`
+>
+> 这边的这个写法就是参数传入的方法！！！
+>
+> ```bash
+> gcc test_qps_client.c -o test_qps_client 
+> ./test_qps_client -s 127.0.0.1 -p 2048 -t 50 -c 100 -n 1000
+> -s: 127.0.0.1
+> -p: 2048
+> -t: 50
+> -c: 100
+> -n: 1000
+> 
+> ```
+
+
+
+---
+
+
+
+### 二、连接发送测试
+
+```c
+int connfd = connect_tcpserver(ctx.serverip, ctx.port);
+
+    if (connfd < 0)
+    {
+        printf("connect_tcpserver failed\n");
+        return -1;
+    }
+    ret = send_recv_tcppkt(connfd);
+    if (ret != 0)
+    {
+        printf("send_recv_tcppkt failed\n");
+        return -1;
+    }
+    printf("success\n");
+    return 0;
+```
+
+![PixPin_2025-08-08_01-35-21](./note/PixPin_2025-08-08_01-35-21.png)
+
+![PixPin_2025-08-08_01-35-10](./note/PixPin_2025-08-08_01-35-10.png)
+
+
+
+----
+
+
+
+### 三、测试实现
+
+```c
+pthread_t *ptid = malloc(ctx.threadnum * sizeof(pthread_t));
+    int i = 0;
+
+    struct timeval tv_begin;
+
+    gettimeofday(&tv_begin, NULL);
+	for (i = 0;i < ctx.threadnum;i ++) {
+		pthread_create(&ptid[i], NULL, test_qps_entry, &ctx);
+	}
+	
+	for (i = 0;i < ctx.threadnum;i ++) {
+		pthread_join(ptid[i], NULL);
+	}
+    
+    struct timeval tv_end;
+	gettimeofday(&tv_end, NULL);
+
+	int time_used = TIME_SUB_MS(tv_end, tv_begin);
+
+	
+	printf("success: %d, failed: %d, time_used: %d, qps: %d\n", ctx.requestion-ctx.failed, 
+		ctx.failed, time_used, ctx.requestion * 1000 / time_used);
+```
+
+
+
+```c
+static void *test_qps_entry(void *arg)
+{
+
+    test_context_t *pctx = (test_context_t *)arg;
+
+    int connfd = connect_tcpserver(pctx->serverip, pctx->port);
+    if (connfd < 0)
+    {
+        printf("connect_tcpserver failed\n");
+        return NULL;
+    }
+
+    int count = pctx->requestion / pctx->threadnum;
+    int i = 0;
+
+    int res;
+
+    while (i++ < count)
+    {
+        res = send_recv_tcppkt(connfd);
+        if (res != 0)
+        {
+            printf("send_recv_tcppkt failed\n");
+            pctx->failed++; //
+            continue;
+        }
+    }
+
+    return NULL;
+}
+```
+
+
+
+
+
+![PixPin_2025-08-08_02-48-21](./note/PixPin_2025-08-08_02-48-21.png)
+
+
+
+---
+
+
+
+### 四、大包发送
+
+
+
+```c
+#else
+
+    char wbuffer[WBUFFER_LENGTH] = {0};
+    int i = 0;
+    
+    //! 这边使用24的话，会造成包特别大，出现分包问题，需要我们进行对于recv的封装操作
+    for (i = 0; i < 24; i++)
+    {
+        strcpy(wbuffer + i * strlen(TEST_MESSAGE), TEST_MESSAGE);
+    }
+    int res = send(fd, wbuffer, strlen(wbuffer), 0);
+    if (res < 0)
+    {
+        exit(1);
+    }
+    char rbuffer[RBUFFER_LENGTH] = {0};
+    res = recv(fd, rbuffer, RBUFFER_LENGTH, 0);
+    if (res <= 0)
+    {
+        exit(1);
+    }
+    if (strcmp(rbuffer, wbuffer) != 0)
+    {
+        printf("failed: '%s' != '%s'\n", rbuffer, wbuffer);
+        return -1;
+    }
+
+#endif
+```
+
+![PixPin_2025-08-08_02-58-25](./note/PixPin_2025-08-08_02-58-25.png)
+
+> 24的时候汇报错！！！
+>
+> ```c
+> //! 这边使用24的话，会造成包特别大，出现分包问题，需要我们进行对于recv的封装操作
+> ```
+>
+> 使用8的时候就不会报错!!!!
+
+
+
+
+
+==测试结果出来的话，显而易见可以看出我们的iouring  速度相对式更快的！！！==
+
+![PixPin_2025-08-08_03-02-14](./note/PixPin_2025-08-08_03-02-14.png)
+
+
+
+
+
+### 五、拓展测试
+
+![image-20250808030509668](./note/image-20250808030509668.png)
+
+
+
+
+
+
+
+
+
+
+
+
+
+---
+
+
+
+## 2.5.3 windows异步机制io
+
+
+
+
+
+
+
+
+
+# 整体网络部分整理
+
+![image-20250808030839045](./note/image-20250808030839045.png)
+
+
+
+
+
+![image-20250808030920837](./note/image-20250808030920837.png)
